@@ -416,6 +416,28 @@ button {
   gap: 14px;
 }
 
+.backup-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.backup-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.hidden-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.file-button {
+  cursor: pointer;
+}
+
 .notice {
   display: none;
   border-radius: 8px;
@@ -570,6 +592,7 @@ button {
 
   .mode-grid,
   .setup-grid,
+  .backup-grid,
   .exam-layout {
     grid-template-columns: 1fr;
   }

@@ -3,6 +3,8 @@ const questions = bank.questions || [];
 const STORAGE_KEY = "xi-quiz-mistakes-v1";
 const AI_CONFIG_KEY = "xi-quiz-ai-config-v1";
 const AI_CACHE_KEY = "xi-quiz-ai-cache-v1";
+const BACKUP_CONFIG_KEY = "xi-quiz-backup-config-v1";
+const BACKUP_FILENAME = "xi-quiz-backup.json";
 
 const state = {
   view: "home",
@@ -11,6 +13,7 @@ const state = {
   timer: null,
   aiStatus: {},
   configMessage: "",
+  backupMessage: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -106,6 +109,20 @@ function saveAiCache(cache) {
   localStorage.setItem(AI_CACHE_KEY, JSON.stringify(cache));
 }
 
+function getBackupConfig() {
+  const saved = readJson(BACKUP_CONFIG_KEY, {});
+  const config = saved && typeof saved === "object" ? saved : {};
+  return {
+    token: typeof config.token === "string" ? config.token : "",
+    gistId: typeof config.gistId === "string" ? config.gistId : "",
+    filename: typeof config.filename === "string" && config.filename ? config.filename : BACKUP_FILENAME,
+  };
+}
+
+function saveBackupConfig(config) {
+  localStorage.setItem(BACKUP_CONFIG_KEY, JSON.stringify(config));
+}
+
 function normalizeApiBase(value) {
   const trimmed = (value || "").trim().replace(/\/+$/, "");
   if (!trimmed) return "";
@@ -151,6 +168,7 @@ function showView(name) {
   if (name === "chapter") renderChapterPicker();
   if (name === "exam") renderExamSetup();
   if (name === "mistakes") renderMistakes();
+  if (name === "backup") renderBackup();
   if (name === "config") safeRenderConfig();
 }
 
@@ -198,6 +216,15 @@ function renderHome() {
           <span class="pill">${getAiConfig().model || "未选择模型"}</span>
         </div>
         <button class="button" data-action="go-config">配置 AI</button>
+      </article>
+      <article class="card mode-card">
+        <h3>数据备份</h3>
+        <p>导出 JSON 文件，或备份到 GitHub Gist，在另一台设备上一键导入。</p>
+        <div class="chapter-meta">
+          <span class="pill">错题 ${Object.keys(getMistakes()).length}</span>
+          <span class="pill">可同步</span>
+        </div>
+        <button class="button" data-action="go-backup">管理备份</button>
       </article>
     </div>
   `;
@@ -668,6 +695,224 @@ function startMistakePractice() {
   startPractice(`错题重练 · ${chapter}`, pool, { removeOnCorrect: true });
 }
 
+function renderBackup() {
+  const config = getBackupConfig();
+  const mistakes = getMistakes();
+  const aiCache = getAiCache();
+  $("#backupView").innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2>数据备份</h2>
+        <p>导出/导入错题、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
+      </div>
+    </div>
+    <div class="grid backup-grid">
+      <section class="panel config-panel">
+        <h3>本地文件</h3>
+        <p class="muted">适合手动迁移，下载 JSON 后在另一台设备导入。</p>
+        <div class="answer-actions">
+          <button class="button" data-action="export-backup">导出备份文件</button>
+          <label class="button secondary file-button" for="backupFile">导入备份文件</label>
+          <input class="hidden-file" id="backupFile" type="file" accept="application/json,.json">
+        </div>
+      </section>
+      <section class="panel config-panel">
+        <h3>GitHub Gist 同步</h3>
+        <p class="muted">需要 GitHub token 具备 gist 权限。token 只保存在当前浏览器本地，不写进备份。</p>
+        <div class="setup-grid">
+          <div class="field">
+            <label for="backupToken">GitHub token</label>
+            <input id="backupToken" type="password" value="${escapeHtml(config.token)}" placeholder="ghp_...">
+          </div>
+          <div class="field">
+            <label for="backupGistId">Gist ID</label>
+            <input id="backupGistId" value="${escapeHtml(config.gistId)}" placeholder="首次备份后自动生成">
+          </div>
+          <div class="field">
+            <label for="backupFilename">文件名</label>
+            <input id="backupFilename" value="${escapeHtml(config.filename)}">
+          </div>
+        </div>
+        <div class="answer-actions">
+          <button class="button secondary" data-action="save-backup-config">保存 GitHub 配置</button>
+          <button class="button" data-action="backup-to-github">备份到 GitHub</button>
+          <button class="button secondary" data-action="restore-from-github">从 GitHub 导入</button>
+        </div>
+      </section>
+    </div>
+    <div class="panel backup-summary">
+      <strong>当前本地数据</strong>
+      <div class="chapter-meta">
+        <span class="pill">错题 ${Object.keys(mistakes).length}</span>
+        <span class="pill">AI 解析缓存 ${Object.keys(aiCache).length}</span>
+        <span class="pill">模型 ${getAiConfig().model || "未配置"}</span>
+      </div>
+      <div class="notice ${state.backupMessage ? "show" : ""}">${escapeHtml(state.backupMessage)}</div>
+    </div>
+  `;
+}
+
+function readBackupForm() {
+  const current = getBackupConfig();
+  return {
+    token: $("#backupToken")?.value || current.token,
+    gistId: ($("#backupGistId")?.value || current.gistId).trim(),
+    filename: ($("#backupFilename")?.value || current.filename || BACKUP_FILENAME).trim(),
+  };
+}
+
+function buildBackupPayload() {
+  const aiConfig = getAiConfig();
+  return {
+    app: "xi-sixiang-shuati",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    questionBank: {
+      total: questions.length,
+      chapters: bank.chapters.length,
+    },
+    data: {
+      mistakes: getMistakes(),
+      aiConfig: {
+        apiBase: aiConfig.apiBase,
+        model: aiConfig.model,
+        models: aiConfig.models,
+      },
+      aiCache: getAiCache(),
+    },
+  };
+}
+
+function applyBackupPayload(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("备份文件格式不正确。");
+  const data = payload.data && typeof payload.data === "object" ? payload.data : payload;
+  const mistakes = data.mistakes && typeof data.mistakes === "object" ? data.mistakes : {};
+  const aiCache = data.aiCache && typeof data.aiCache === "object" ? data.aiCache : {};
+  const importedAiConfig = data.aiConfig && typeof data.aiConfig === "object" ? data.aiConfig : {};
+  const currentAiConfig = getAiConfig();
+
+  saveMistakes(mistakes);
+  saveAiCache(aiCache);
+  saveAiConfig({
+    ...currentAiConfig,
+    apiBase: typeof importedAiConfig.apiBase === "string" ? importedAiConfig.apiBase : currentAiConfig.apiBase,
+    model: typeof importedAiConfig.model === "string" ? importedAiConfig.model : currentAiConfig.model,
+    models: Array.isArray(importedAiConfig.models)
+      ? importedAiConfig.models.filter((model) => typeof model === "string")
+      : currentAiConfig.models,
+    apiKey: currentAiConfig.apiKey,
+  });
+  updateSidebarStats();
+  state.backupMessage = `已导入备份：错题 ${Object.keys(mistakes).length} 道，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
+}
+
+function exportBackupFile() {
+  const payload = buildBackupPayload();
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `xi-quiz-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  state.backupMessage = "备份文件已导出。";
+  renderBackup();
+}
+
+async function importBackupFile(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    applyBackupPayload(JSON.parse(text));
+  } catch (error) {
+    state.backupMessage = `导入失败：${error?.message || String(error)}`;
+  }
+  input.value = "";
+  renderBackup();
+}
+
+function saveBackupConfigFromForm() {
+  saveBackupConfig(readBackupForm());
+  state.backupMessage = "GitHub 备份配置已保存。";
+  renderBackup();
+}
+
+function githubHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "Content-Type": "application/json",
+  };
+}
+
+async function backupToGithub() {
+  const config = readBackupForm();
+  if (!config.token) {
+    state.backupMessage = "请先填写 GitHub token。";
+    renderBackup();
+    return;
+  }
+  const filename = config.filename || BACKUP_FILENAME;
+  const payload = buildBackupPayload();
+  const body = {
+    description: "习思想刷题软件数据备份",
+    public: false,
+    files: {
+      [filename]: {
+        content: JSON.stringify(payload, null, 2),
+      },
+    },
+  };
+
+  state.backupMessage = "正在备份到 GitHub...";
+  renderBackup();
+  try {
+    const url = config.gistId ? `https://api.github.com/gists/${config.gistId}` : "https://api.github.com/gists";
+    const response = await fetch(url, {
+      method: config.gistId ? "PATCH" : "POST",
+      headers: githubHeaders(config.token),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`GitHub 备份失败：HTTP ${response.status}`);
+    const gist = await response.json();
+    saveBackupConfig({ ...config, gistId: gist.id, filename });
+    state.backupMessage = `已备份到 GitHub Gist：${gist.id}`;
+  } catch (error) {
+    state.backupMessage = explainNetworkError(error);
+  }
+  renderBackup();
+}
+
+async function restoreFromGithub() {
+  const config = readBackupForm();
+  if (!config.token || !config.gistId) {
+    state.backupMessage = "请填写 GitHub token 和 Gist ID。";
+    renderBackup();
+    return;
+  }
+
+  state.backupMessage = "正在从 GitHub 导入...";
+  renderBackup();
+  try {
+    const response = await fetch(`https://api.github.com/gists/${config.gistId}`, {
+      headers: githubHeaders(config.token),
+    });
+    if (!response.ok) throw new Error(`GitHub 导入失败：HTTP ${response.status}`);
+    const gist = await response.json();
+    const files = Object.values(gist.files || {});
+    const file = files.find((item) => item.filename === config.filename) || files[0];
+    if (!file?.content) throw new Error("Gist 中没有找到备份内容。");
+    applyBackupPayload(JSON.parse(file.content));
+    saveBackupConfig({ ...config, filename: file.filename || config.filename });
+  } catch (error) {
+    state.backupMessage = explainNetworkError(error);
+  }
+  renderBackup();
+}
+
 function renderConfig() {
   const config = getAiConfig();
   const cacheCount = Object.keys(getAiCache()).length;
@@ -998,6 +1243,11 @@ document.addEventListener("click", (event) => {
   if (action === "go-exam") showView("exam");
   if (action === "go-mistakes") showView("mistakes");
   if (action === "go-config") showView("config");
+  if (action === "go-backup") showView("backup");
+  if (action === "export-backup") exportBackupFile();
+  if (action === "save-backup-config") saveBackupConfigFromForm();
+  if (action === "backup-to-github") backupToGithub();
+  if (action === "restore-from-github") restoreFromGithub();
   if (action === "start-chapter") {
     const chapter = target.dataset.chapter;
     startPractice(`章节刷题 · ${chapter}`, chapterQuestions(chapter));
@@ -1049,6 +1299,10 @@ document.addEventListener("click", (event) => {
 document.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
+  if (input.id === "backupFile") {
+    importBackupFile(input);
+    return;
+  }
   if (input.name?.startsWith("answer-")) {
     if (state.exam && $("#examView").classList.contains("active-view")) handleExamAnswer(input);
     else handlePracticeAnswer(input);
