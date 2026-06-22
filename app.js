@@ -1,12 +1,16 @@
 const bank = window.QUESTION_BANK || { questions: [], chapters: [], total: 0 };
 const questions = bank.questions || [];
 const STORAGE_KEY = "xi-quiz-mistakes-v1";
+const AI_CONFIG_KEY = "xi-quiz-ai-config-v1";
+const AI_CACHE_KEY = "xi-quiz-ai-cache-v1";
 
 const state = {
   view: "home",
   practice: null,
   exam: null,
   timer: null,
+  aiStatus: {},
+  configMessage: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -65,6 +69,60 @@ function questionById(id) {
   return questions.find((question) => question.id === id);
 }
 
+function readJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
+  } catch {
+    return fallback;
+  }
+}
+
+function getAiConfig() {
+  return {
+    apiBase: "https://gcli.ggchan.dev",
+    apiKey: "",
+    model: "",
+    models: [],
+    ...readJson(AI_CONFIG_KEY, {}),
+  };
+}
+
+function saveAiConfig(config) {
+  localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config));
+}
+
+function getAiCache() {
+  return readJson(AI_CACHE_KEY, {});
+}
+
+function saveAiCache(cache) {
+  localStorage.setItem(AI_CACHE_KEY, JSON.stringify(cache));
+}
+
+function normalizeApiBase(value) {
+  const trimmed = (value || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.endsWith("/v1") ? trimmed.slice(0, -3) : trimmed;
+}
+
+function buildApiUrl(apiBase, path) {
+  return `${normalizeApiBase(apiBase)}/v1/${path.replace(/^\/+/, "")}`;
+}
+
+function aiCacheKey(question, model) {
+  return `${model}:${question.id}`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  })[char]);
+}
+
 function updateSidebarStats() {
   $("#statTotal").textContent = String(questions.length);
   $("#statMistakes").textContent = String(Object.keys(getMistakes()).length);
@@ -86,6 +144,7 @@ function showView(name) {
   if (name === "chapter") renderChapterPicker();
   if (name === "exam") renderExamSetup();
   if (name === "mistakes") renderMistakes();
+  if (name === "config") renderConfig();
 }
 
 function renderHome() {
@@ -124,6 +183,14 @@ function renderHome() {
           <span class="pill">${Object.keys(getMistakes()).length} 道错题</span>
         </div>
         <button class="button" data-action="go-mistakes">查看错题</button>
+      </article>
+      <article class="card mode-card">
+        <h3>AI 解析</h3>
+        <p>配置接口和模型后，可以让 AI 解释当前题目和正确答案。</p>
+        <div class="chapter-meta">
+          <span class="pill">${getAiConfig().model || "未选择模型"}</span>
+        </div>
+        <button class="button" data-action="go-config">配置 AI</button>
       </article>
     </div>
   `;
@@ -211,8 +278,10 @@ function renderPractice() {
       </div>
       <div class="answer-actions">
         <button class="button" data-action="check-practice" ${practice.checked ? "disabled" : ""}>提交本题</button>
+        <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">AI 解析</button>
         <button class="button secondary" data-action="next-practice">${practice.index + 1 === practice.questions.length ? "完成" : "下一题"}</button>
       </div>
+      ${renderAiPanel(question, practice.selected)}
     </div>
   `;
 }
@@ -421,8 +490,10 @@ function renderExam() {
         <div class="exam-actions">
           <button class="button secondary" data-action="prev-exam" ${exam.index === 0 ? "disabled" : ""}>上一题</button>
           <button class="button secondary" data-action="next-exam" ${exam.index + 1 === exam.questions.length ? "disabled" : ""}>下一题</button>
+          <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">AI 解析</button>
           <button class="button" data-action="submit-exam">交卷</button>
         </div>
+        ${renderAiPanel(question, selected)}
       </div>
       <aside class="panel">
         <h3>答题卡</h3>
@@ -556,6 +627,218 @@ function startMistakePractice() {
   startPractice(`错题重练 · ${chapter}`, pool, { removeOnCorrect: true });
 }
 
+function renderConfig() {
+  const config = getAiConfig();
+  const cacheCount = Object.keys(getAiCache()).length;
+  $("#configView").innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2>AI 配置</h2>
+        <p>API key 只保存在当前浏览器本地，不会写进题库文件或 GitHub 仓库。</p>
+      </div>
+    </div>
+    <div class="panel config-panel">
+      <div class="setup-grid">
+        <div class="field">
+          <label for="aiApiBase">API 地址</label>
+          <input id="aiApiBase" type="url" value="${escapeHtml(config.apiBase || "https://gcli.ggchan.dev")}" placeholder="https://gcli.ggchan.dev">
+        </div>
+        <div class="field">
+          <label for="aiApiKey">API key</label>
+          <input id="aiApiKey" type="password" value="${escapeHtml(config.apiKey || "")}" placeholder="sk-...">
+        </div>
+        <div class="field">
+          <label for="aiModel">模型</label>
+          <select id="aiModel">
+            <option value="">先拉取模型</option>
+            ${(config.models || [])
+              .map((model) => `<option value="${escapeHtml(model)}" ${model === config.model ? "selected" : ""}>${escapeHtml(model)}</option>`)
+              .join("")}
+          </select>
+        </div>
+      </div>
+      <div class="answer-actions">
+        <button class="button" data-action="fetch-models">拉取模型</button>
+        <button class="button secondary" data-action="save-ai-config">保存配置</button>
+        <button class="button secondary" data-action="clear-ai-cache">清除解析缓存（${cacheCount}）</button>
+        <button class="button ghost" data-action="clear-ai-config">清除配置</button>
+      </div>
+      <div class="notice ${state.configMessage ? "show" : ""}" id="configMessage">${state.configMessage}</div>
+    </div>
+  `;
+}
+
+function readConfigForm() {
+  const current = getAiConfig();
+  return {
+    apiBase: normalizeApiBase($("#aiApiBase")?.value || current.apiBase),
+    apiKey: $("#aiApiKey")?.value || "",
+    model: $("#aiModel")?.value || current.model || "",
+    models: current.models || [],
+  };
+}
+
+async function fetchModels() {
+  const config = readConfigForm();
+  state.configMessage = "";
+  if (!config.apiBase || !config.apiKey) {
+    state.configMessage = "请先填写 API 地址和 key。";
+    renderConfig();
+    return;
+  }
+
+  state.configMessage = "正在拉取模型...";
+  saveAiConfig(config);
+  renderConfig();
+  try {
+    const response = await fetch(buildApiUrl(config.apiBase, "models"), {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    });
+    if (!response.ok) throw new Error(`模型拉取失败：HTTP ${response.status}`);
+    const payload = await response.json();
+    const models = (payload.data || []).map((item) => item.id).filter(Boolean);
+    if (!models.length) throw new Error("没有在返回结果中找到模型 id。");
+    const next = {
+      ...config,
+      models,
+      model: models.includes(config.model) ? config.model : models[0],
+    };
+    saveAiConfig(next);
+    state.configMessage = `已拉取 ${models.length} 个模型，并保存配置。`;
+  } catch (error) {
+    state.configMessage = explainNetworkError(error);
+  }
+  renderConfig();
+}
+
+function saveConfigFromForm() {
+  const config = readConfigForm();
+  saveAiConfig(config);
+  state.configMessage = "配置已保存。";
+  renderConfig();
+}
+
+function renderAiPanel(question, selected) {
+  const config = getAiConfig();
+  const cache = getAiCache();
+  const status = state.aiStatus[question.id] || {};
+  const cached = config.model ? cache[aiCacheKey(question, config.model)] : "";
+  const content = status.content || cached || "";
+  const chosen = selectedAnswer(selected) || "未作答";
+  const body = status.loading
+    ? "正在请求 AI 解析..."
+    : status.error
+      ? status.error
+      : content || "点击“AI 解析”，把当前题目、选项、正确答案和你的选择发给 AI。";
+  const classes = ["ai-panel"];
+  if (status.error) classes.push("error");
+  if (content && !status.error) classes.push("ready");
+
+  return `
+    <section class="${classes.join(" ")}">
+      <div class="ai-panel-head">
+        <strong>AI 解析</strong>
+        <span>你的答案：${chosen}</span>
+      </div>
+      <div class="ai-content">${formatAiContent(body)}</div>
+    </section>
+  `;
+}
+
+function formatAiContent(value) {
+  return escapeHtml(value).replace(/\n/g, "<br>");
+}
+
+function buildPrompt(question, selected) {
+  const options = Object.entries(question.options)
+    .map(([label, text]) => `${label}. ${text}`)
+    .join("\n");
+  const userAnswer = selectedAnswer(selected) || "未作答";
+  return `题型：${formatType(question.type)}
+章节：${question.chapter}
+题目：${question.stem}
+选项：
+${options}
+正确答案：${question.answer}
+用户答案：${userAnswer}
+
+请先说明正确答案；再逐项解释为什么选或不选；最后给出一个适合考前复习的记忆提示。`;
+}
+
+function explainNetworkError(error) {
+  const message = error?.message || String(error);
+  if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
+    return "请求失败：浏览器可能被 CORS 拦截，或 API 地址不可访问。若是 CORS，需要增加后端代理。";
+  }
+  return message;
+}
+
+function renderActiveQuestion() {
+  if ($("#practiceView").classList.contains("active-view")) renderPractice();
+  if ($("#examView").classList.contains("active-view")) renderExam();
+}
+
+async function explainQuestion(questionId) {
+  const question = questionById(questionId);
+  if (!question) return;
+
+  const config = getAiConfig();
+  const selected =
+    state.exam && $("#examView").classList.contains("active-view")
+      ? new Set(state.exam.answers[question.id] || [])
+      : state.practice?.questions[state.practice.index]?.id === question.id
+        ? state.practice.selected
+        : new Set();
+
+  if (!config.apiBase || !config.apiKey || !config.model) {
+    state.aiStatus[question.id] = { error: "请先到“AI 配置”填写 API 地址、key，并选择模型。" };
+    renderActiveQuestion();
+    return;
+  }
+
+  const cache = getAiCache();
+  const cacheKey = aiCacheKey(question, config.model);
+  if (cache[cacheKey]) {
+    state.aiStatus[question.id] = { content: cache[cacheKey] };
+    renderActiveQuestion();
+    return;
+  }
+
+  state.aiStatus[question.id] = { loading: true };
+  renderActiveQuestion();
+  try {
+    const response = await fetch(buildApiUrl(config.apiBase, "chat/completions"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是严谨的大学政治理论课助教。请基于题干和给定答案解析，不要改判题库答案；若需要提醒不确定性，请简短说明。",
+          },
+          { role: "user", content: buildPrompt(question, selected) },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`AI 解析失败：HTTP ${response.status}`);
+    const payload = await response.json();
+    const content = payload.choices?.[0]?.message?.content?.trim();
+    if (!content) throw new Error("AI 返回为空。");
+    cache[cacheKey] = content;
+    saveAiCache(cache);
+    state.aiStatus[question.id] = { content };
+  } catch (error) {
+    state.aiStatus[question.id] = { error: explainNetworkError(error) };
+  }
+  renderActiveQuestion();
+}
+
 document.addEventListener("click", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -564,6 +847,7 @@ document.addEventListener("click", (event) => {
   if (action === "go-chapter") showView("chapter");
   if (action === "go-exam") showView("exam");
   if (action === "go-mistakes") showView("mistakes");
+  if (action === "go-config") showView("config");
   if (action === "start-chapter") {
     const chapter = target.dataset.chapter;
     startPractice(`章节刷题 · ${chapter}`, chapterQuestions(chapter));
@@ -586,6 +870,19 @@ document.addEventListener("click", (event) => {
   }
   if (action === "submit-exam") submitExam();
   if (action === "start-mistakes") startMistakePractice();
+  if (action === "ai-explain") explainQuestion(target.dataset.questionId);
+  if (action === "fetch-models") fetchModels();
+  if (action === "save-ai-config") saveConfigFromForm();
+  if (action === "clear-ai-cache") {
+    saveAiCache({});
+    state.configMessage = "解析缓存已清除。";
+    renderConfig();
+  }
+  if (action === "clear-ai-config") {
+    localStorage.removeItem(AI_CONFIG_KEY);
+    state.configMessage = "AI 配置已清除。";
+    renderConfig();
+  }
   if (action === "clear-mistakes") {
     saveMistakes({});
     renderMistakes();

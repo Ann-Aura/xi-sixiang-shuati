@@ -164,7 +164,7 @@ button {
 }
 
 .mode-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
 .chapter-grid {
@@ -409,6 +409,59 @@ button {
   border-radius: 8px;
   padding: 0 10px;
   background: #fff;
+}
+
+.config-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.notice {
+  display: none;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff7e6;
+  color: var(--amber);
+  line-height: 1.6;
+}
+
+.notice.show {
+  display: block;
+}
+
+.ai-panel {
+  border: 1px solid #d3dde8;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f8fafc;
+}
+
+.ai-panel.ready {
+  background: #f5fbf8;
+  border-color: rgba(31, 122, 77, 0.35);
+}
+
+.ai-panel.error {
+  background: #fff5f2;
+  border-color: rgba(180, 35, 24, 0.35);
+}
+
+.ai-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #344054;
+}
+
+.ai-panel-head span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ai-content {
+  line-height: 1.75;
+  color: #26364a;
 }
 
 .setup-grid {
