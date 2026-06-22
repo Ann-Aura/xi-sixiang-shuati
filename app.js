@@ -848,6 +848,27 @@ function githubHeaders(token) {
   };
 }
 
+async function githubErrorMessage(response, actionName) {
+  let detail = "";
+  try {
+    const payload = await response.json();
+    detail = payload.message ? `（${payload.message}）` : "";
+  } catch {
+    detail = "";
+  }
+
+  if (response.status === 401) {
+    return `${actionName}失败：GitHub token 无效、过期、复制不完整，或已经被撤销。请重新生成 token，并确保具备 Gist 写权限。${detail}`;
+  }
+  if (response.status === 403) {
+    return `${actionName}失败：token 权限不足。Fine-grained token 需要 User permissions 里的 Gists: Read and write；Classic token 需要 gist scope。${detail}`;
+  }
+  if (response.status === 404) {
+    return `${actionName}失败：没有找到这个 Gist，或当前 token 无权访问它。${detail}`;
+  }
+  return `${actionName}失败：HTTP ${response.status}${detail}`;
+}
+
 async function backupToGithub() {
   const config = readBackupForm();
   if (!config.token) {
@@ -876,7 +897,7 @@ async function backupToGithub() {
       headers: githubHeaders(config.token),
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(`GitHub 备份失败：HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await githubErrorMessage(response, "GitHub 备份"));
     const gist = await response.json();
     saveBackupConfig({ ...config, gistId: gist.id, filename });
     state.backupMessage = `已备份到 GitHub Gist：${gist.id}`;
@@ -900,7 +921,7 @@ async function restoreFromGithub() {
     const response = await fetch(`https://api.github.com/gists/${config.gistId}`, {
       headers: githubHeaders(config.token),
     });
-    if (!response.ok) throw new Error(`GitHub 导入失败：HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await githubErrorMessage(response, "GitHub 导入"));
     const gist = await response.json();
     const files = Object.values(gist.files || {});
     const file = files.find((item) => item.filename === config.filename) || files[0];
