@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>习思想刷题</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">题</div>
+          <div>
+            <h1>习思想刷题</h1>
+            <p id="bankMeta">题库加载中</p>
+          </div>
+        </div>
+
+        <nav class="nav-tabs" aria-label="主导航">
+          <button class="nav-button active" data-view="home">首页</button>
+          <button class="nav-button" data-view="chapter">章节刷题</button>
+          <button class="nav-button" data-view="exam">随机考试</button>
+          <button class="nav-button" data-view="mistakes">错题本</button>
+        </nav>
+
+        <div class="mini-stats">
+          <div>
+            <span id="statTotal">0</span>
+            <small>总题数</small>
+          </div>
+          <div>
+            <span id="statMistakes">0</span>
+            <small>错题</small>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <section id="homeView" class="view active-view"></section>
+        <section id="chapterView" class="view"></section>
+        <section id="practiceView" class="view"></section>
+        <section id="examView" class="view"></section>
+        <section id="mistakesView" class="view"></section>
+        <section id="resultView" class="view"></section>
+      </main>
+    </div>
+
+    <script src="data/questions.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
