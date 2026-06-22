@@ -78,12 +78,19 @@ function readJson(key, fallback) {
 }
 
 function getAiConfig() {
-  return {
+  const saved = readJson(AI_CONFIG_KEY, {});
+  const config = {
     apiBase: "https://gcli.ggchan.dev",
     apiKey: "",
     model: "",
     models: [],
-    ...readJson(AI_CONFIG_KEY, {}),
+    ...(saved && typeof saved === "object" ? saved : {}),
+  };
+  return {
+    apiBase: typeof config.apiBase === "string" ? config.apiBase : "https://gcli.ggchan.dev",
+    apiKey: typeof config.apiKey === "string" ? config.apiKey : "",
+    model: typeof config.model === "string" ? config.model : "",
+    models: Array.isArray(config.models) ? config.models.filter((model) => typeof model === "string") : [],
   };
 }
 
@@ -144,7 +151,7 @@ function showView(name) {
   if (name === "chapter") renderChapterPicker();
   if (name === "exam") renderExamSetup();
   if (name === "mistakes") renderMistakes();
-  if (name === "config") renderConfig();
+  if (name === "config") safeRenderConfig();
 }
 
 function renderHome() {
@@ -663,9 +670,29 @@ function renderConfig() {
         <button class="button secondary" data-action="clear-ai-cache">清除解析缓存（${cacheCount}）</button>
         <button class="button ghost" data-action="clear-ai-config">清除配置</button>
       </div>
-      <div class="notice ${state.configMessage ? "show" : ""}" id="configMessage">${state.configMessage}</div>
+      <div class="notice ${state.configMessage ? "show" : ""}" id="configMessage">${escapeHtml(state.configMessage)}</div>
     </div>
   `;
+}
+
+function safeRenderConfig() {
+  try {
+    renderConfig();
+  } catch (error) {
+    console.error(error);
+    $("#configView").innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>AI 配置</h2>
+          <p>配置页加载时遇到本地缓存异常，已提供恢复操作。</p>
+        </div>
+      </div>
+      <div class="panel config-panel">
+        <div class="notice show">配置缓存格式异常：${escapeHtml(error?.message || String(error))}</div>
+        <button class="button" data-action="reset-ai-config-hard">重置 AI 配置</button>
+      </div>
+    `;
+  }
 }
 
 function readConfigForm() {
@@ -683,13 +710,13 @@ async function fetchModels() {
   state.configMessage = "";
   if (!config.apiBase || !config.apiKey) {
     state.configMessage = "请先填写 API 地址和 key。";
-    renderConfig();
+    safeRenderConfig();
     return;
   }
 
   state.configMessage = "正在拉取模型...";
   saveAiConfig(config);
-  renderConfig();
+  safeRenderConfig();
   try {
     const response = await fetch(buildApiUrl(config.apiBase, "models"), {
       headers: { Authorization: `Bearer ${config.apiKey}` },
@@ -708,14 +735,14 @@ async function fetchModels() {
   } catch (error) {
     state.configMessage = explainNetworkError(error);
   }
-  renderConfig();
+  safeRenderConfig();
 }
 
 function saveConfigFromForm() {
   const config = readConfigForm();
   saveAiConfig(config);
   state.configMessage = "配置已保存。";
-  renderConfig();
+  safeRenderConfig();
 }
 
 function renderAiPanel(question, selected) {
@@ -876,12 +903,18 @@ document.addEventListener("click", (event) => {
   if (action === "clear-ai-cache") {
     saveAiCache({});
     state.configMessage = "解析缓存已清除。";
-    renderConfig();
+    safeRenderConfig();
   }
   if (action === "clear-ai-config") {
     localStorage.removeItem(AI_CONFIG_KEY);
     state.configMessage = "AI 配置已清除。";
-    renderConfig();
+    safeRenderConfig();
+  }
+  if (action === "reset-ai-config-hard") {
+    localStorage.removeItem(AI_CONFIG_KEY);
+    localStorage.removeItem(AI_CACHE_KEY);
+    state.configMessage = "AI 配置和解析缓存已重置。";
+    safeRenderConfig();
   }
   if (action === "clear-mistakes") {
     saveMistakes({});
