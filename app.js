@@ -243,13 +243,27 @@ function startPractice(title, sourceQuestions, options = {}) {
     title,
     questions: sourceQuestions,
     index: 0,
-    selected: new Set(),
-    checked: false,
+    records: {},
     correct: 0,
     answered: 0,
     removeOnCorrect: Boolean(options.removeOnCorrect),
   };
   showPractice();
+}
+
+function getPracticeRecord(practice, question) {
+  if (!practice.records) practice.records = {};
+  if (!practice.records[question.id]) {
+    practice.records[question.id] = { selected: [], checked: false, correct: false };
+  }
+  return practice.records[question.id];
+}
+
+function getPracticeStats(practice) {
+  const records = Object.values(practice.records || {});
+  const answered = records.filter((record) => record.checked).length;
+  const correct = records.filter((record) => record.checked && record.correct).length;
+  return { answered, correct };
 }
 
 function showPractice() {
@@ -266,6 +280,8 @@ function renderPractice() {
   }
 
   const question = practice.questions[practice.index];
+  const record = getPracticeRecord(practice, question);
+  const selected = new Set(record.selected);
   const progress = Math.round(((practice.index + 1) / practice.questions.length) * 100);
   $("#practiceView").innerHTML = `
     <div class="page-head">
@@ -277,18 +293,19 @@ function renderPractice() {
     </div>
     <div class="panel question-shell">
       <div class="progress-bar"><span style="width:${progress}%"></span></div>
-      ${renderQuestion(question, practice.selected, practice.checked)}
-      <div id="practiceFeedback" class="feedback ${practice.checked ? "show" : ""} ${
-        practice.checked && isCorrect(question, practice.selected) ? "ok" : "bad"
+      ${renderQuestion(question, selected, record.checked)}
+      <div id="practiceFeedback" class="feedback ${record.checked ? "show" : ""} ${
+        record.checked && isCorrect(question, selected) ? "ok" : "bad"
       }">
-        ${practice.checked ? feedbackText(question, practice.selected) : ""}
+        ${record.checked ? feedbackText(question, selected) : ""}
       </div>
       <div class="answer-actions">
-        <button class="button" data-action="check-practice" ${practice.checked ? "disabled" : ""}>提交本题</button>
+        <button class="button secondary" data-action="prev-practice" ${practice.index === 0 ? "disabled" : ""}>上一题</button>
+        <button class="button" data-action="check-practice" ${record.checked ? "disabled" : ""}>提交本题</button>
         <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">AI 解析</button>
         <button class="button secondary" data-action="next-practice">${practice.index + 1 === practice.questions.length ? "完成" : "下一题"}</button>
       </div>
-      ${renderAiPanel(question, practice.selected)}
+      ${renderAiPanel(question, selected)}
     </div>
   `;
 }
@@ -333,37 +350,55 @@ function feedbackText(question, selected) {
 
 function handlePracticeAnswer(input) {
   const practice = state.practice;
-  if (!practice || practice.checked) return;
+  if (!practice) return;
+  const question = practice.questions[practice.index];
+  const record = getPracticeRecord(practice, question);
+  if (record.checked) return;
   const value = input.value;
+  const selected = new Set(record.selected);
   if (input.type === "radio") {
-    practice.selected = new Set([value]);
-  } else if (practice.selected.has(value)) {
-    practice.selected.delete(value);
+    record.selected = [value];
+  } else if (selected.has(value)) {
+    selected.delete(value);
+    record.selected = [...selected].sort();
   } else {
-    practice.selected.add(value);
+    selected.add(value);
+    record.selected = [...selected].sort();
   }
   renderPractice();
 }
 
 function checkPractice() {
   const practice = state.practice;
-  if (!practice || practice.checked) return;
+  if (!practice) return;
   const question = practice.questions[practice.index];
-  practice.checked = true;
-  practice.answered += 1;
-  if (isCorrect(question, practice.selected)) {
-    practice.correct += 1;
+  const record = getPracticeRecord(practice, question);
+  if (record.checked) return;
+  const selected = new Set(record.selected);
+  record.checked = true;
+  record.correct = isCorrect(question, selected);
+  if (record.correct) {
     if (practice.removeOnCorrect) removeMistake(question);
   } else {
     addMistake(question);
   }
+  Object.assign(practice, getPracticeStats(practice));
+  renderPractice();
+}
+
+function prevPractice() {
+  const practice = state.practice;
+  if (!practice || practice.index === 0) return;
+  practice.index -= 1;
   renderPractice();
 }
 
 function nextPractice() {
   const practice = state.practice;
   if (!practice) return;
-  if (!practice.checked) {
+  const question = practice.questions[practice.index];
+  const record = getPracticeRecord(practice, question);
+  if (!record.checked) {
     checkPractice();
     return;
   }
@@ -372,14 +407,13 @@ function nextPractice() {
     return;
   }
   practice.index += 1;
-  practice.selected = new Set();
-  practice.checked = false;
   renderPractice();
 }
 
 function renderPracticeResult() {
   const practice = state.practice;
-  const rate = practice.answered ? Math.round((practice.correct / practice.answered) * 100) : 0;
+  const stats = getPracticeStats(practice);
+  const rate = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
   $("#resultView").classList.add("active-view");
   $("#resultView").innerHTML = `
@@ -390,7 +424,7 @@ function renderPracticeResult() {
       </div>
     </div>
     <div class="card result-card">
-      <h3>${practice.correct} / ${practice.answered}</h3>
+      <h3>${stats.correct} / ${stats.answered}</h3>
       <p>正确率 ${rate}%</p>
       <div class="answer-actions" style="margin-top:16px">
         <button class="button" data-action="go-chapter">继续章节刷题</button>
@@ -773,7 +807,96 @@ function renderAiPanel(question, selected) {
 }
 
 function formatAiContent(value) {
-  return escapeHtml(value).replace(/\n/g, "<br>");
+  return renderMarkdown(value);
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>");
+}
+
+function renderMarkdown(value) {
+  const lines = String(value).replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let listType = "";
+  let inCode = false;
+  let codeLines = [];
+
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = "";
+    }
+  };
+  const openList = (type) => {
+    if (listType !== type) {
+      closeList();
+      listType = type;
+      html.push(`<${type}>`);
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        codeLines = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(6, heading[1].length + 2);
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const unordered = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (unordered) {
+      openList("ul");
+      html.push(`<li>${renderInlineMarkdown(unordered[1])}</li>`);
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)、]\s+(.+)$/);
+    if (ordered) {
+      openList("ol");
+      html.push(`<li>${renderInlineMarkdown(ordered[1])}</li>`);
+      continue;
+    }
+
+    const quote = trimmed.match(/^>\s?(.+)$/);
+    if (quote) {
+      closeList();
+      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  }
+
+  if (inCode) html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+  closeList();
+  return html.join("");
 }
 
 function buildPrompt(question, selected) {
@@ -814,7 +937,7 @@ async function explainQuestion(questionId) {
     state.exam && $("#examView").classList.contains("active-view")
       ? new Set(state.exam.answers[question.id] || [])
       : state.practice?.questions[state.practice.index]?.id === question.id
-        ? state.practice.selected
+        ? new Set(getPracticeRecord(state.practice, question).selected)
         : new Set();
 
   if (!config.apiBase || !config.apiKey || !config.model) {
@@ -881,6 +1004,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "back-chapter") showView("chapter");
   if (action === "check-practice") checkPractice();
+  if (action === "prev-practice") prevPractice();
   if (action === "next-practice") nextPractice();
   if (action === "start-exam") startExam();
   if (action === "prev-exam" && state.exam) {

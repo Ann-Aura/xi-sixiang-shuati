@@ -464,6 +464,60 @@ button {
   color: #26364a;
 }
 
+.ai-content p,
+.ai-content ul,
+.ai-content ol,
+.ai-content blockquote,
+.ai-content pre {
+  margin: 8px 0;
+}
+
+.ai-content h3,
+.ai-content h4,
+.ai-content h5,
+.ai-content h6 {
+  margin: 12px 0 6px;
+  color: #18202f;
+  letter-spacing: 0;
+}
+
+.ai-content ul,
+.ai-content ol {
+  padding-left: 22px;
+}
+
+.ai-content li + li {
+  margin-top: 4px;
+}
+
+.ai-content blockquote {
+  border-left: 3px solid #9db5cf;
+  padding-left: 10px;
+  color: #4a5b70;
+}
+
+.ai-content code {
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: #e9eef5;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.95em;
+}
+
+.ai-content pre {
+  overflow: auto;
+  border-radius: 8px;
+  padding: 10px;
+  background: #172033;
+  color: #f7fafc;
+}
+
+.ai-content pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
 .setup-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
