@@ -5,6 +5,7 @@ const AI_CONFIG_KEY = "xi-quiz-ai-config-v1";
 const AI_CACHE_KEY = "xi-quiz-ai-cache-v1";
 const BACKUP_CONFIG_KEY = "xi-quiz-backup-config-v1";
 const BACKUP_FILENAME = "xi-quiz-backup.json";
+const PROGRESS_KEY = "xi-quiz-progress-v1";
 
 const state = {
   view: "home",
@@ -29,6 +30,120 @@ function getMistakes() {
 function saveMistakes(value) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
   updateSidebarStats();
+}
+
+function sanitizePracticeSnapshot(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.questionIds)) return null;
+  const questionIds = value.questionIds.filter((id) => typeof id === "string" && questionById(id));
+  if (!questionIds.length) return null;
+
+  const records = {};
+  if (value.records && typeof value.records === "object") {
+    questionIds.forEach((id) => {
+      const record = value.records[id];
+      if (!record || typeof record !== "object") return;
+      records[id] = {
+        selected: Array.isArray(record.selected)
+          ? record.selected.filter((label) => typeof label === "string").sort()
+          : [],
+        checked: Boolean(record.checked),
+        correct: Boolean(record.correct),
+      };
+    });
+  }
+
+  return {
+    title: typeof value.title === "string" && value.title ? value.title : "继续刷题",
+    questionIds,
+    index: Math.min(Math.max(Number(value.index) || 0, 0), questionIds.length - 1),
+    records,
+    removeOnCorrect: Boolean(value.removeOnCorrect),
+    returnView: value.returnView === "mistakes" ? "mistakes" : "chapter",
+    kind: typeof value.kind === "string" ? value.kind : "chapter",
+  };
+}
+
+function sanitizeProgress(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const completed = {};
+  if (source.completed && typeof source.completed === "object") {
+    Object.entries(source.completed).forEach(([id, entry]) => {
+      if (!questionById(id)) return;
+      completed[id] = {
+        completedAt: typeof entry?.completedAt === "string" ? entry.completedAt : "",
+        correct: Boolean(entry?.correct),
+      };
+    });
+  }
+  return { completed, resume: sanitizePracticeSnapshot(source.resume) };
+}
+
+function getProgress() {
+  return sanitizeProgress(readJson(PROGRESS_KEY, {}));
+}
+
+function saveProgress(value) {
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(sanitizeProgress(value)));
+}
+
+function completedCount(sourceQuestions) {
+  const completed = getProgress().completed;
+  return sourceQuestions.filter((question) => completed[question.id]).length;
+}
+
+function markQuestionCompleted(question, correct) {
+  const progress = getProgress();
+  progress.completed[question.id] = {
+    completedAt: new Date().toISOString(),
+    correct: Boolean(correct),
+  };
+  saveProgress(progress);
+}
+
+function saveCurrentPractice() {
+  const practice = state.practice;
+  if (!practice?.questions?.length) return;
+  const progress = getProgress();
+  progress.resume = {
+    title: practice.title,
+    questionIds: practice.questions.map((question) => question.id),
+    index: practice.index,
+    records: practice.records || {},
+    removeOnCorrect: practice.removeOnCorrect,
+    returnView: practice.returnView,
+    kind: practice.kind,
+  };
+  saveProgress(progress);
+}
+
+function clearPracticeResume() {
+  const progress = getProgress();
+  progress.resume = null;
+  saveProgress(progress);
+}
+
+function restoreLastPractice() {
+  const snapshot = getProgress().resume;
+  if (!snapshot) return false;
+  const restoredQuestions = snapshot.questionIds.map(questionById).filter(Boolean);
+  if (!restoredQuestions.length) {
+    clearPracticeResume();
+    return false;
+  }
+  state.practice = {
+    title: snapshot.title,
+    questions: restoredQuestions,
+    index: Math.min(snapshot.index, restoredQuestions.length - 1),
+    records: snapshot.records,
+    correct: 0,
+    answered: 0,
+    removeOnCorrect: snapshot.removeOnCorrect,
+    returnView: snapshot.returnView,
+    kind: snapshot.kind,
+  };
+  Object.assign(state.practice, getPracticeStats(state.practice));
+  showPractice();
+  return true;
 }
 
 function addMistake(question) {
@@ -63,9 +178,9 @@ function shuffle(items) {
   return [...items].sort(() => Math.random() - 0.5);
 }
 
-function chapterQuestions(chapterName) {
-  if (!chapterName || chapterName === "全部章节") return questions;
-  return questions.filter((question) => question.chapter === chapterName);
+function chapterQuestions(chapterName, type = "") {
+  const pool = !chapterName || chapterName === "全部章节" ? questions : questions.filter((question) => question.chapter === chapterName);
+  return type ? pool.filter((question) => question.type === type) : pool;
 }
 
 function questionById(id) {
@@ -174,7 +289,7 @@ function showView(name) {
 
 function renderHome() {
   const single = questions.filter((question) => question.type === "single").length;
-  const multiple = questions.length - single;
+  const resume = getProgress().resume;
   $("#homeView").innerHTML = `
     <div class="page-head">
       <div>
@@ -182,6 +297,17 @@ function renderHome() {
         <p>离线题库已经准备好：章节练习适合补短板，随机考试适合模拟检测。</p>
       </div>
     </div>
+    ${
+      resume
+        ? `<section class="panel continue-panel">
+            <div>
+              <h3>继续上次刷题</h3>
+              <p>${escapeHtml(resume.title)} · 第 ${resume.index + 1} / ${resume.questionIds.length} 题</p>
+            </div>
+            <button class="button" data-action="resume-practice">继续</button>
+          </section>`
+        : ""
+    }
     <div class="grid mode-grid">
       <article class="card mode-card">
         <h3>章节刷题</h3>
@@ -194,10 +320,10 @@ function renderHome() {
       </article>
       <article class="card mode-card">
         <h3>随机考试</h3>
-        <p>从全题库随机抽题，计时交卷，最后统一看成绩和错题。</p>
+        <p>从单选题库随机抽题，计时交卷，最后统一看成绩和错题。</p>
         <div class="chapter-meta">
           <span class="pill">单选 ${single}</span>
-          <span class="pill">多选 ${multiple}</span>
+          <span class="pill">仅考单选</span>
         </div>
         <button class="button" data-action="go-exam">进入考试</button>
       </article>
@@ -231,12 +357,20 @@ function renderHome() {
 }
 
 function renderChapterPicker() {
-  const allSingle = questions.filter((question) => question.type === "single").length;
-  const allMultiple = questions.length - allSingle;
   const cards = [
-    { name: "全部章节", count: questions.length, single: allSingle, multiple: allMultiple },
+    { name: "全部章节" },
     ...bank.chapters,
-  ];
+  ].map((chapter) => {
+    const sourceQuestions = chapterQuestions(chapter.name);
+    const single = sourceQuestions.filter((question) => question.type === "single").length;
+    return {
+      ...chapter,
+      count: sourceQuestions.length,
+      single,
+      multiple: sourceQuestions.length - single,
+      completed: completedCount(sourceQuestions),
+    };
+  });
 
   $("#chapterView").innerHTML = `
     <div class="page-head">
@@ -251,12 +385,16 @@ function renderChapterPicker() {
           (chapter) => `
         <article class="card chapter-card">
           <h3>${chapter.name}</h3>
-          <p>${chapter.count} 道题</p>
+          <p>已刷 ${chapter.completed} / ${chapter.count} 题</p>
           <div class="chapter-meta">
             <span class="pill">单选 ${chapter.single}</span>
             <span class="pill">多选 ${chapter.multiple}</span>
           </div>
-          <button class="button" data-action="start-chapter" data-chapter="${chapter.name}">开始</button>
+          <div class="chapter-actions">
+            <button class="button" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}">全部题目</button>
+            <button class="button secondary" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}" data-type="single">刷单选</button>
+            <button class="button secondary" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}" data-type="multiple">刷多选</button>
+          </div>
         </article>
       `
         )
@@ -268,13 +406,17 @@ function renderChapterPicker() {
 function startPractice(title, sourceQuestions, options = {}) {
   state.practice = {
     title,
-    questions: sourceQuestions,
+    questions: [...sourceQuestions],
     index: 0,
     records: {},
     correct: 0,
     answered: 0,
     removeOnCorrect: Boolean(options.removeOnCorrect),
+    returnView: options.returnView === "mistakes" ? "mistakes" : "chapter",
+    kind: options.kind || "chapter",
   };
+  if (state.practice.questions.length) saveCurrentPractice();
+  else clearPracticeResume();
   showPractice();
 }
 
@@ -294,7 +436,9 @@ function getPracticeStats(practice) {
 }
 
 function showPractice() {
+  state.view = "practice";
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
+  document.querySelectorAll(".nav-button").forEach((button) => button.classList.remove("active"));
   $("#practiceView").classList.add("active-view");
   renderPractice();
 }
@@ -316,7 +460,7 @@ function renderPractice() {
         <h2>${practice.title}</h2>
         <p>第 ${practice.index + 1} / ${practice.questions.length} 题 · ${formatType(question.type)} · PDF 第 ${question.sourcePage} 页</p>
       </div>
-      <button class="button secondary" data-action="back-chapter">返回选择</button>
+      <button class="button secondary" data-action="back-practice">返回${practice.returnView === "mistakes" ? "错题本" : "选择"}</button>
     </div>
     <div class="panel question-shell">
       <div class="progress-bar"><span style="width:${progress}%"></span></div>
@@ -392,6 +536,7 @@ function handlePracticeAnswer(input) {
     selected.add(value);
     record.selected = [...selected].sort();
   }
+  saveCurrentPractice();
   renderPractice();
 }
 
@@ -404,12 +549,14 @@ function checkPractice() {
   const selected = new Set(record.selected);
   record.checked = true;
   record.correct = isCorrect(question, selected);
+  markQuestionCompleted(question, record.correct);
   if (record.correct) {
     if (practice.removeOnCorrect) removeMistake(question);
   } else {
     addMistake(question);
   }
   Object.assign(practice, getPracticeStats(practice));
+  saveCurrentPractice();
   renderPractice();
 }
 
@@ -417,6 +564,7 @@ function prevPractice() {
   const practice = state.practice;
   if (!practice || practice.index === 0) return;
   practice.index -= 1;
+  saveCurrentPractice();
   renderPractice();
 }
 
@@ -434,11 +582,13 @@ function nextPractice() {
     return;
   }
   practice.index += 1;
+  saveCurrentPractice();
   renderPractice();
 }
 
 function renderPracticeResult() {
   const practice = state.practice;
+  clearPracticeResume();
   const stats = getPracticeStats(practice);
   const rate = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
@@ -454,20 +604,24 @@ function renderPracticeResult() {
       <h3>${stats.correct} / ${stats.answered}</h3>
       <p>正确率 ${rate}%</p>
       <div class="answer-actions" style="margin-top:16px">
-        <button class="button" data-action="go-chapter">继续章节刷题</button>
-        <button class="button secondary" data-action="go-mistakes">查看错题本</button>
+        <button class="button" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">${
+          practice.returnView === "mistakes" ? "返回错题本" : "继续章节刷题"
+        }</button>
+        <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-chapter" : "go-mistakes"}">${
+          practice.returnView === "mistakes" ? "章节刷题" : "查看错题本"
+        }</button>
       </div>
     </div>
   `;
 }
 
 function renderExamSetup() {
-  const max = questions.length;
+  const max = questions.filter((question) => question.type === "single").length;
   $("#examView").innerHTML = `
     <div class="page-head">
       <div>
         <h2>随机考试</h2>
-        <p>从全部选择题中随机抽题，交卷后统一判分。</p>
+        <p>从单选题中随机抽题，交卷后统一判分。</p>
       </div>
     </div>
     <div class="panel">
@@ -502,7 +656,7 @@ function startExam() {
   const count = Number($("#examCount").value);
   const minutes = Number($("#examMinutes").value);
   const chapter = $("#examChapter").value;
-  const pool = shuffle(chapterQuestions(chapter));
+  const pool = shuffle(chapterQuestions(chapter, "single"));
   const examQuestions = pool.slice(0, Math.min(count, pool.length));
   state.exam = {
     questions: examQuestions,
@@ -606,6 +760,7 @@ function submitExam() {
   const rows = exam.questions.map((question, index) => {
     const selected = new Set(exam.answers[question.id] || []);
     const ok = isCorrect(question, selected);
+    markQuestionCompleted(question, ok);
     if (ok) correct += 1;
     else addMistake(question);
     return { question, index, selected: selectedAnswer(selected) || "未作答", ok };
@@ -675,7 +830,10 @@ function renderMistakes() {
               <strong>${formatType(question.type)} · 错 ${mistakes[question.id].wrongCount} 次</strong>
               <p class="muted">${question.stem}</p>
             </div>
-            <span class="pill">${question.chapter}</span>
+            <div class="mistake-row-actions">
+              <span class="pill">${question.chapter}</span>
+              <button class="button secondary" data-action="start-single-mistake" data-question-id="${question.id}">做这题</button>
+            </div>
           </div>
         `
           )
@@ -692,18 +850,29 @@ function startMistakePractice() {
   const ids = Object.keys(getMistakes());
   let pool = ids.map(questionById).filter(Boolean);
   if (chapter !== "全部章节") pool = pool.filter((question) => question.chapter === chapter);
-  startPractice(`错题重练 · ${chapter}`, pool, { removeOnCorrect: true });
+  startPractice(`错题重练 · ${chapter}`, pool, { removeOnCorrect: true, returnView: "mistakes", kind: "mistakes" });
+}
+
+function startSingleMistakePractice(questionId) {
+  const question = questionById(questionId);
+  if (!question) return;
+  startPractice(`错题重练 · 单题`, [question], {
+    removeOnCorrect: true,
+    returnView: "mistakes",
+    kind: "mistake-single",
+  });
 }
 
 function renderBackup() {
   const config = getBackupConfig();
   const mistakes = getMistakes();
   const aiCache = getAiCache();
+  const progress = getProgress();
   $("#backupView").innerHTML = `
     <div class="page-head">
       <div>
         <h2>数据备份</h2>
-        <p>导出/导入错题、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
+        <p>导出/导入刷题进度、错题、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
       </div>
     </div>
     <div class="grid backup-grid">
@@ -743,6 +912,7 @@ function renderBackup() {
     <div class="panel backup-summary">
       <strong>当前本地数据</strong>
       <div class="chapter-meta">
+        <span class="pill">已刷 ${Object.keys(progress.completed).length}</span>
         <span class="pill">错题 ${Object.keys(mistakes).length}</span>
         <span class="pill">AI 解析缓存 ${Object.keys(aiCache).length}</span>
         <span class="pill">模型 ${getAiConfig().model || "未配置"}</span>
@@ -765,7 +935,7 @@ function buildBackupPayload() {
   const aiConfig = getAiConfig();
   return {
     app: "xi-sixiang-shuati",
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     questionBank: {
       total: questions.length,
@@ -773,6 +943,7 @@ function buildBackupPayload() {
     },
     data: {
       mistakes: getMistakes(),
+      progress: getProgress(),
       aiConfig: {
         apiBase: aiConfig.apiBase,
         model: aiConfig.model,
@@ -787,11 +958,13 @@ function applyBackupPayload(payload) {
   if (!payload || typeof payload !== "object") throw new Error("备份文件格式不正确。");
   const data = payload.data && typeof payload.data === "object" ? payload.data : payload;
   const mistakes = data.mistakes && typeof data.mistakes === "object" ? data.mistakes : {};
+  const progress = data.progress && typeof data.progress === "object" ? data.progress : getProgress();
   const aiCache = data.aiCache && typeof data.aiCache === "object" ? data.aiCache : {};
   const importedAiConfig = data.aiConfig && typeof data.aiConfig === "object" ? data.aiConfig : {};
   const currentAiConfig = getAiConfig();
 
   saveMistakes(mistakes);
+  saveProgress(progress);
   saveAiCache(aiCache);
   saveAiConfig({
     ...currentAiConfig,
@@ -803,7 +976,7 @@ function applyBackupPayload(payload) {
     apiKey: currentAiConfig.apiKey,
   });
   updateSidebarStats();
-  state.backupMessage = `已导入备份：错题 ${Object.keys(mistakes).length} 道，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
+  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
 }
 
 function exportBackupFile() {
@@ -1265,15 +1438,18 @@ document.addEventListener("click", (event) => {
   if (action === "go-mistakes") showView("mistakes");
   if (action === "go-config") showView("config");
   if (action === "go-backup") showView("backup");
+  if (action === "resume-practice") restoreLastPractice();
   if (action === "export-backup") exportBackupFile();
   if (action === "save-backup-config") saveBackupConfigFromForm();
   if (action === "backup-to-github") backupToGithub();
   if (action === "restore-from-github") restoreFromGithub();
   if (action === "start-chapter") {
     const chapter = target.dataset.chapter;
-    startPractice(`章节刷题 · ${chapter}`, chapterQuestions(chapter));
+    const type = target.dataset.type || "";
+    const typeTitle = type === "single" ? " · 单选" : type === "multiple" ? " · 多选" : "";
+    startPractice(`章节刷题 · ${chapter}${typeTitle}`, chapterQuestions(chapter, type), { kind: "chapter" });
   }
-  if (action === "back-chapter") showView("chapter");
+  if (action === "back-practice") showView(state.practice?.returnView || "chapter");
   if (action === "check-practice") checkPractice();
   if (action === "prev-practice") prevPractice();
   if (action === "next-practice") nextPractice();
@@ -1292,6 +1468,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "submit-exam") submitExam();
   if (action === "start-mistakes") startMistakePractice();
+  if (action === "start-single-mistake") startSingleMistakePractice(target.dataset.questionId);
   if (action === "ai-explain") explainQuestion(target.dataset.questionId);
   if (action === "fetch-models") fetchModels();
   if (action === "save-ai-config") saveConfigFromForm();
@@ -1335,4 +1512,4 @@ document.querySelectorAll(".nav-button").forEach((button) => {
 });
 
 updateSidebarStats();
-renderHome();
+if (!restoreLastPractice()) renderHome();

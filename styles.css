@@ -201,11 +201,36 @@ button {
 .chapter-meta,
 .toolbar,
 .answer-actions,
-.exam-actions {
+.exam-actions,
+.chapter-actions,
+.mistake-row-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.chapter-actions .button {
+  min-width: 0;
+  flex: 1 1 88px;
+}
+
+.continue-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.continue-panel h3,
+.continue-panel p {
+  margin: 0;
+}
+
+.continue-panel p {
+  margin-top: 5px;
+  color: var(--muted);
 }
 
 .chapter-meta {
@@ -572,6 +597,10 @@ button {
   background: #fff;
 }
 
+.mistake-row-actions {
+  justify-content: flex-end;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -599,5 +628,10 @@ button {
 
   .main-panel {
     padding: 18px;
+  }
+
+  .continue-panel {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
