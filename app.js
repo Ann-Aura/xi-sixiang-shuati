@@ -13,6 +13,7 @@ const state = {
   exam: null,
   timer: null,
   aiStatus: {},
+  aiExpanded: {},
   configMessage: "",
   backupMessage: "",
 };
@@ -48,6 +49,7 @@ function sanitizePracticeSnapshot(value) {
           : [],
         checked: Boolean(record.checked),
         correct: Boolean(record.correct),
+        skipped: Boolean(record.skipped),
       };
     });
   }
@@ -423,7 +425,7 @@ function startPractice(title, sourceQuestions, options = {}) {
 function getPracticeRecord(practice, question) {
   if (!practice.records) practice.records = {};
   if (!practice.records[question.id]) {
-    practice.records[question.id] = { selected: [], checked: false, correct: false };
+    practice.records[question.id] = { selected: [], checked: false, correct: false, skipped: false };
   }
   return practice.records[question.id];
 }
@@ -432,7 +434,12 @@ function getPracticeStats(practice) {
   const records = Object.values(practice.records || {});
   const answered = records.filter((record) => record.checked).length;
   const correct = records.filter((record) => record.checked && record.correct).length;
-  return { answered, correct };
+  const skipped = records.filter((record) => !record.checked && record.skipped).length;
+  return { answered, correct, skipped };
+}
+
+function firstUnfinishedPracticeIndex(practice) {
+  return practice.questions.findIndex((question) => !practice.records?.[question.id]?.checked);
 }
 
 function showPractice() {
@@ -473,7 +480,8 @@ function renderPractice() {
       <div class="answer-actions">
         <button class="button secondary" data-action="prev-practice" ${practice.index === 0 ? "disabled" : ""}>上一题</button>
         <button class="button" data-action="check-practice" ${record.checked ? "disabled" : ""}>提交本题</button>
-        <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">AI 解析</button>
+        <button class="button secondary" data-action="skip-practice" ${record.checked ? "disabled" : ""}>跳过</button>
+        <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
         <button class="button secondary" data-action="next-practice">${practice.index + 1 === practice.questions.length ? "完成" : "下一题"}</button>
       </div>
       ${renderAiPanel(question, selected)}
@@ -536,6 +544,7 @@ function handlePracticeAnswer(input) {
     selected.add(value);
     record.selected = [...selected].sort();
   }
+  record.skipped = false;
   saveCurrentPractice();
   renderPractice();
 }
@@ -549,6 +558,7 @@ function checkPractice() {
   const selected = new Set(record.selected);
   record.checked = true;
   record.correct = isCorrect(question, selected);
+  record.skipped = false;
   markQuestionCompleted(question, record.correct);
   if (record.correct) {
     if (practice.removeOnCorrect) removeMistake(question);
@@ -574,6 +584,10 @@ function nextPractice() {
   const question = practice.questions[practice.index];
   const record = getPracticeRecord(practice, question);
   if (!record.checked) {
+    if (record.skipped) {
+      skipPractice();
+      return;
+    }
     checkPractice();
     return;
   }
@@ -586,10 +600,50 @@ function nextPractice() {
   renderPractice();
 }
 
+function skipPractice() {
+  const practice = state.practice;
+  if (!practice) return;
+  const question = practice.questions[practice.index];
+  const record = getPracticeRecord(practice, question);
+  if (record.checked) return;
+
+  record.skipped = true;
+  if (practice.index + 1 >= practice.questions.length) {
+    const unfinishedIndex = firstUnfinishedPracticeIndex(practice);
+    if (unfinishedIndex >= 0) practice.index = unfinishedIndex;
+    saveCurrentPractice();
+    renderPracticeResult();
+    return;
+  }
+  practice.index += 1;
+  saveCurrentPractice();
+  renderPractice();
+}
+
+function continueUnfinishedPractice() {
+  const practice = state.practice;
+  if (!practice) return;
+  const unfinishedIndex = firstUnfinishedPracticeIndex(practice);
+  if (unfinishedIndex < 0) {
+    renderPracticeResult();
+    return;
+  }
+  practice.index = unfinishedIndex;
+  saveCurrentPractice();
+  showPractice();
+}
+
 function renderPracticeResult() {
   const practice = state.practice;
-  clearPracticeResume();
   const stats = getPracticeStats(practice);
+  const unfinishedIndex = firstUnfinishedPracticeIndex(practice);
+  const hasUnfinished = unfinishedIndex >= 0;
+  if (hasUnfinished) {
+    practice.index = unfinishedIndex;
+    saveCurrentPractice();
+  } else {
+    clearPracticeResume();
+  }
   const rate = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
   $("#resultView").classList.add("active-view");
@@ -602,14 +656,21 @@ function renderPracticeResult() {
     </div>
     <div class="card result-card">
       <h3>${stats.correct} / ${stats.answered}</h3>
-      <p>正确率 ${rate}%</p>
+      <p>正确率 ${rate}% · 跳过 ${stats.skipped} 题</p>
       <div class="answer-actions" style="margin-top:16px">
-        <button class="button" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">${
-          practice.returnView === "mistakes" ? "返回错题本" : "继续章节刷题"
-        }</button>
-        <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-chapter" : "go-mistakes"}">${
-          practice.returnView === "mistakes" ? "章节刷题" : "查看错题本"
-        }</button>
+        ${
+          hasUnfinished
+            ? `<button class="button" data-action="continue-unfinished">继续未做题</button>
+              <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">返回${
+                practice.returnView === "mistakes" ? "错题本" : "选择"
+              }</button>`
+            : `<button class="button" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">${
+                practice.returnView === "mistakes" ? "返回错题本" : "继续章节刷题"
+              }</button>
+              <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-chapter" : "go-mistakes"}">${
+                practice.returnView === "mistakes" ? "章节刷题" : "查看错题本"
+              }</button>`
+        }
       </div>
     </div>
   `;
@@ -712,7 +773,7 @@ function renderExam() {
         <div class="exam-actions">
           <button class="button secondary" data-action="prev-exam" ${exam.index === 0 ? "disabled" : ""}>上一题</button>
           <button class="button secondary" data-action="next-exam" ${exam.index + 1 === exam.questions.length ? "disabled" : ""}>下一题</button>
-          <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">AI 解析</button>
+          <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
           <button class="button" data-action="submit-exam">交卷</button>
         </div>
         ${renderAiPanel(question, selected)}
@@ -975,6 +1036,8 @@ function applyBackupPayload(payload) {
       : currentAiConfig.models,
     apiKey: currentAiConfig.apiKey,
   });
+  state.aiStatus = {};
+  state.aiExpanded = {};
   updateSidebarStats();
   state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
 }
@@ -994,9 +1057,19 @@ function exportBackupFile() {
   renderBackup();
 }
 
+function confirmBackupImport() {
+  return window.confirm("导入会覆盖当前的刷题进度、错题和 AI 解析缓存，确定继续吗？");
+}
+
 async function importBackupFile(input) {
   const file = input.files?.[0];
   if (!file) return;
+  if (!confirmBackupImport()) {
+    input.value = "";
+    state.backupMessage = "已取消导入，当前数据未变化。";
+    renderBackup();
+    return;
+  }
   try {
     const text = await file.text();
     applyBackupPayload(JSON.parse(text));
@@ -1084,6 +1157,11 @@ async function restoreFromGithub() {
   const config = readBackupForm();
   if (!config.token || !config.gistId) {
     state.backupMessage = "请填写 GitHub token 和 Gist ID。";
+    renderBackup();
+    return;
+  }
+  if (!confirmBackupImport()) {
+    state.backupMessage = "已取消导入，当前数据未变化。";
     renderBackup();
     return;
   }
@@ -1218,18 +1296,33 @@ function saveConfigFromForm() {
   safeRenderConfig();
 }
 
+function aiStatusKey(question, model) {
+  return model ? aiCacheKey(question, model) : `unconfigured:${question.id}`;
+}
+
+function aiActionLabel(question) {
+  const config = getAiConfig();
+  const key = aiStatusKey(question, config.model);
+  const status = state.aiStatus[key] || {};
+  const cached = config.model ? getAiCache()[aiCacheKey(question, config.model)] : "";
+  if (status.loading) return "解析中...";
+  if (status.error) return "重新解析";
+  if (status.content || cached) return state.aiExpanded[key] ? "收起解析" : "展开解析";
+  return "AI 解析";
+}
+
 function renderAiPanel(question, selected) {
   const config = getAiConfig();
+  const key = aiStatusKey(question, config.model);
   const cache = getAiCache();
-  const status = state.aiStatus[question.id] || {};
+  const status = state.aiStatus[key] || {};
   const cached = config.model ? cache[aiCacheKey(question, config.model)] : "";
   const content = status.content || cached || "";
+  const expanded = Boolean(state.aiExpanded[key]);
+  if (!status.loading && !status.error && (!content || !expanded)) return "";
+
   const chosen = selectedAnswer(selected) || "未作答";
-  const body = status.loading
-    ? "正在请求 AI 解析..."
-    : status.error
-      ? status.error
-      : content || "点击“AI 解析”，把当前题目、选项、正确答案和你的选择发给 AI。";
+  const body = status.loading ? "正在请求 AI 解析..." : status.error || content;
   const classes = ["ai-panel"];
   if (status.error) classes.push("error");
   if (content && !status.error) classes.push("ready");
@@ -1379,21 +1472,26 @@ async function explainQuestion(questionId) {
         ? new Set(getPracticeRecord(state.practice, question).selected)
         : new Set();
 
-  if (!config.apiBase || !config.apiKey || !config.model) {
-    state.aiStatus[question.id] = { error: "请先到“AI 配置”填写 API 地址、key，并选择模型。" };
-    renderActiveQuestion();
-    return;
-  }
-
   const cache = getAiCache();
   const cacheKey = aiCacheKey(question, config.model);
-  if (cache[cacheKey]) {
-    state.aiStatus[question.id] = { content: cache[cacheKey] };
+  const statusKey = aiStatusKey(question, config.model);
+  const currentStatus = state.aiStatus[statusKey] || {};
+  if (currentStatus.loading) return;
+
+  if (cache[cacheKey] || currentStatus.content) {
+    state.aiExpanded[statusKey] = !state.aiExpanded[statusKey];
     renderActiveQuestion();
     return;
   }
 
-  state.aiStatus[question.id] = { loading: true };
+  if (!config.apiBase || !config.apiKey || !config.model) {
+    state.aiStatus[statusKey] = { error: "请先到“AI 配置”填写 API 地址、key，并选择模型。" };
+    renderActiveQuestion();
+    return;
+  }
+
+  state.aiExpanded[statusKey] = true;
+  state.aiStatus[statusKey] = { loading: true };
   renderActiveQuestion();
   try {
     const response = await fetch(buildApiUrl(config.apiBase, "chat/completions"), {
@@ -1421,9 +1519,9 @@ async function explainQuestion(questionId) {
     if (!content) throw new Error("AI 返回为空。");
     cache[cacheKey] = content;
     saveAiCache(cache);
-    state.aiStatus[question.id] = { content };
+    state.aiStatus[statusKey] = { content };
   } catch (error) {
-    state.aiStatus[question.id] = { error: explainNetworkError(error) };
+    state.aiStatus[statusKey] = { error: explainNetworkError(error) };
   }
   renderActiveQuestion();
 }
@@ -1453,6 +1551,8 @@ document.addEventListener("click", (event) => {
   if (action === "check-practice") checkPractice();
   if (action === "prev-practice") prevPractice();
   if (action === "next-practice") nextPractice();
+  if (action === "skip-practice") skipPractice();
+  if (action === "continue-unfinished") continueUnfinishedPractice();
   if (action === "start-exam") startExam();
   if (action === "prev-exam" && state.exam) {
     state.exam.index -= 1;
@@ -1474,17 +1574,23 @@ document.addEventListener("click", (event) => {
   if (action === "save-ai-config") saveConfigFromForm();
   if (action === "clear-ai-cache") {
     saveAiCache({});
+    state.aiStatus = {};
+    state.aiExpanded = {};
     state.configMessage = "解析缓存已清除。";
     safeRenderConfig();
   }
   if (action === "clear-ai-config") {
     localStorage.removeItem(AI_CONFIG_KEY);
+    state.aiStatus = {};
+    state.aiExpanded = {};
     state.configMessage = "AI 配置已清除。";
     safeRenderConfig();
   }
   if (action === "reset-ai-config-hard") {
     localStorage.removeItem(AI_CONFIG_KEY);
     localStorage.removeItem(AI_CACHE_KEY);
+    state.aiStatus = {};
+    state.aiExpanded = {};
     state.configMessage = "AI 配置和解析缓存已重置。";
     safeRenderConfig();
   }
