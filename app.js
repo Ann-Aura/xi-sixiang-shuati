@@ -6,6 +6,10 @@ const AI_CACHE_KEY = "xi-quiz-ai-cache-v1";
 const BACKUP_CONFIG_KEY = "xi-quiz-backup-config-v1";
 const BACKUP_FILENAME = "xi-quiz-backup.json";
 const PROGRESS_KEY = "xi-quiz-progress-v1";
+const EXAM_EXCLUDED_CHAPTERS = new Set([
+  "第十三章 维护和塑造国家安全",
+  "第十四章 建设巩固国防和强大人民军队",
+]);
 
 const state = {
   view: "home",
@@ -183,6 +187,14 @@ function shuffle(items) {
 function chapterQuestions(chapterName, type = "") {
   const pool = !chapterName || chapterName === "全部章节" ? questions : questions.filter((question) => question.chapter === chapterName);
   return type ? pool.filter((question) => question.type === type) : pool;
+}
+
+function examQuestions(chapterName) {
+  return chapterQuestions(chapterName, "single").filter((question) => !EXAM_EXCLUDED_CHAPTERS.has(question.chapter));
+}
+
+function examChapters() {
+  return bank.chapters.filter((chapter) => !EXAM_EXCLUDED_CHAPTERS.has(chapter.name));
 }
 
 function questionById(id) {
@@ -677,7 +689,7 @@ function renderPracticeResult() {
 }
 
 function renderExamSetup() {
-  const max = questions.filter((question) => question.type === "single").length;
+  const max = examQuestions("全部章节").length;
   $("#examView").innerHTML = `
     <div class="page-head">
       <div>
@@ -704,7 +716,7 @@ function renderExamSetup() {
           <label for="examChapter">范围</label>
           <select id="examChapter">
             <option value="全部章节">全部章节</option>
-            ${bank.chapters.map((chapter) => `<option value="${chapter.name}">${chapter.name}</option>`).join("")}
+            ${examChapters().map((chapter) => `<option value="${chapter.name}">${chapter.name}</option>`).join("")}
           </select>
         </div>
       </div>
@@ -717,7 +729,7 @@ function startExam() {
   const count = Number($("#examCount").value);
   const minutes = Number($("#examMinutes").value);
   const chapter = $("#examChapter").value;
-  const pool = shuffle(chapterQuestions(chapter, "single"));
+  const pool = shuffle(examQuestions(chapter));
   const examQuestions = pool.slice(0, Math.min(count, pool.length));
   state.exam = {
     questions: examQuestions,
