@@ -24,6 +24,11 @@ KNOWLEDGE = "知识点"
 SINGLE = "单选题"
 MULTIPLE = "多选题"
 MULTIPLE_ALT = "多项选择题"
+BRIEF = "简答题"
+EXCLUDED_BRIEF_CHAPTERS = {
+    "第十三章 维护和塑造国家安全",
+    "第十四章 建设巩固国防和强大人民军队",
+}
 
 CHAPTER_RE = re.compile(
     rf"(导\s*论|第[{CN_NUM}]+章\s*[^\n]+(\n[^\n]{{2,28}})?)"
@@ -38,6 +43,8 @@ STOP_RE = re.compile(
 QUESTION_RE = re.compile(r"(?m)^\s*(\d+)\s*[\.．、]\s*")
 OPTION_RE = re.compile(r"(?m)^\s*([A-D])\s*[\.．、]\s*")
 INLINE_ANSWER_RE = re.compile(rf"(?:{REF}|答案)\s*[：:]?\s*([A-D][A-D\s]*)")
+BRIEF_RE = re.compile(rf"(?m)^\s*(?:二、)?{BRIEF}\s*$")
+BRIEF_ANSWER_RE = re.compile(r"(?:答案要点|答)\s*[：:]")
 
 
 def clean_text(value: str) -> str:
@@ -138,18 +145,84 @@ def parse_options(block: str) -> tuple[str, dict[str, str]] | None:
 
 
 def question_id(question: dict[str, object]) -> str:
-    payload = json.dumps(
-        {
-            "chapter": question["chapter"],
-            "type": question["type"],
-            "stem": question["stem"],
-            "options": question["options"],
-            "answer": question["answer"],
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    return sha1(payload.encode("utf-8")).hexdigest()[:12]
+    payload: dict[str, object] = {
+        "chapter": question["chapter"],
+        "type": question["type"],
+        "stem": question["stem"],
+    }
+    if question["type"] == "brief":
+        payload["referenceAnswer"] = question["referenceAnswer"]
+    else:
+        payload["options"] = question["options"]
+        payload["answer"] = question["answer"]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return sha1(encoded.encode("utf-8")).hexdigest()[:12]
+
+
+def extract_brief_questions(
+    chapter: str,
+    chapter_pages: list[tuple[int, str]],
+    chapter_text: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    if chapter in EXCLUDED_BRIEF_CHAPTERS:
+        return [], []
+
+    questions: list[dict[str, object]] = []
+    issues: list[dict[str, object]] = []
+    markers = list(BRIEF_RE.finditer(chapter_text))
+    for marker_index, marker in enumerate(markers):
+        section_start = marker.end()
+        section_end = markers[marker_index + 1].start() if marker_index + 1 < len(markers) else len(chapter_text)
+        section_text = chapter_text[section_start:section_end]
+        starts = list(QUESTION_RE.finditer(section_text))
+
+        for question_index, question_marker in enumerate(starts):
+            number = int(question_marker.group(1))
+            block_start = question_marker.end()
+            block_end = starts[question_index + 1].start() if question_index + 1 < len(starts) else len(section_text)
+            raw_block = section_text[block_start:block_end]
+            previous_pages = list(re.finditer(r"\[\[PAGE:(\d+)\]\]", section_text[: question_marker.start()]))
+            source_page = int(previous_pages[-1].group(1)) if previous_pages else chapter_pages[0][0]
+            block = re.sub(r"\[\[PAGE:\d+\]\]", " ", raw_block)
+            answer_match = BRIEF_ANSWER_RE.search(block)
+            if not answer_match:
+                issues.append(
+                    {
+                        "chapter": chapter,
+                        "type": "brief",
+                        "number": number,
+                        "reason": "brief_answer_not_found",
+                        "sample": clean_text(block)[:160],
+                    }
+                )
+                continue
+
+            stem = clean_text(block[: answer_match.start()])
+            reference_answer = clean_text(block[answer_match.end() :])
+            if not stem or not reference_answer:
+                issues.append(
+                    {
+                        "chapter": chapter,
+                        "type": "brief",
+                        "number": number,
+                        "reason": "brief_content_incomplete",
+                        "sample": clean_text(block)[:160],
+                    }
+                )
+                continue
+
+            question = {
+                "chapter": chapter,
+                "type": "brief",
+                "number": number,
+                "stem": stem,
+                "referenceAnswer": reference_answer,
+                "sourcePage": source_page,
+            }
+            question["id"] = question_id(question)
+            questions.append(question)
+
+    return questions, issues
 
 
 def extract_questions(pdf_path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -277,6 +350,10 @@ def extract_questions(pdf_path: Path) -> tuple[list[dict[str, object]], list[dic
                 question["id"] = question_id(question)
                 questions.append(question)
 
+        brief_questions, brief_issues = extract_brief_questions(chapter, chapter_pages, chapter_text)
+        questions.extend(brief_questions)
+        issues.extend(brief_issues)
+
     deduped: list[dict[str, object]] = []
     seen: set[tuple[object, ...]] = set()
     for question in questions:
@@ -284,8 +361,9 @@ def extract_questions(pdf_path: Path) -> tuple[list[dict[str, object]], list[dic
             question["chapter"],
             question["type"],
             question["stem"],
-            tuple(question["options"][key] for key in "ABCD"),  # type: ignore[index]
-            question["answer"],
+            question.get("referenceAnswer")
+            if question["type"] == "brief"
+            else (tuple(question["options"][key] for key in "ABCD"), question["answer"]),  # type: ignore[index]
         )
         if key in seen:
             continue
@@ -296,7 +374,7 @@ def extract_questions(pdf_path: Path) -> tuple[list[dict[str, object]], list[dic
         key=lambda question: (
             chapter_order(str(question["chapter"])),
             int(question["sourcePage"]),
-            0 if question["type"] == "single" else 1,
+            {"single": 0, "multiple": 1, "brief": 2}.get(str(question["type"]), 9),
             int(question["number"]),
         )
     )
@@ -322,6 +400,7 @@ def main() -> int:
                 "count": len(chapter_questions),
                 "single": sum(1 for question in chapter_questions if question["type"] == "single"),
                 "multiple": sum(1 for question in chapter_questions if question["type"] == "multiple"),
+                "brief": sum(1 for question in chapter_questions if question["type"] == "brief"),
             }
         )
 

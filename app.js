@@ -7,6 +7,7 @@ const BACKUP_CONFIG_KEY = "xi-quiz-backup-config-v1";
 const BACKUP_FILENAME = "xi-quiz-backup.json";
 const PROGRESS_KEY = "xi-quiz-progress-v1";
 const FAVORITES_KEY = "xi-quiz-favorites-v1";
+const BRIEF_REVIEW_KEY = "xi-quiz-brief-reviews-v1";
 const EXAM_EXCLUDED_CHAPTERS = new Set([
   "第十三章 维护和塑造国家安全",
   "第十四章 建设巩固国防和强大人民军队",
@@ -19,6 +20,8 @@ const state = {
   timer: null,
   aiStatus: {},
   aiExpanded: {},
+  briefRevealed: {},
+  reviewFilter: "all",
   configMessage: "",
   backupMessage: "",
 };
@@ -58,6 +61,46 @@ function toggleFavorite(question) {
   if (favorites[question.id]) delete favorites[question.id];
   else favorites[question.id] = { savedAt: new Date().toISOString() };
   saveFavorites(favorites);
+}
+
+function getBriefReviews() {
+  const saved = readJson(BRIEF_REVIEW_KEY, {});
+  if (!saved || typeof saved !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(saved).filter(
+      ([id, value]) => questionById(id)?.type === "brief" && value && typeof value === "object"
+    )
+  );
+}
+
+function saveBriefReviews(value) {
+  const valid = Object.fromEntries(
+    Object.entries(value || {}).filter(
+      ([id, entry]) => questionById(id)?.type === "brief" && entry && typeof entry === "object"
+    )
+  );
+  localStorage.setItem(BRIEF_REVIEW_KEY, JSON.stringify(valid));
+}
+
+function briefReviewLabel(level) {
+  if (level === "unknown") return "完全不会";
+  if (level === "partial") return "有点了解";
+  return "我很熟悉";
+}
+
+function briefReviewQueue() {
+  const reviews = getBriefReviews();
+  return Object.entries(reviews)
+    .filter(([, review]) => review.level === "unknown" || review.level === "partial")
+    .map(([id]) => questionById(id))
+    .filter(Boolean);
+}
+
+function saveBriefReview(question, level) {
+  const reviews = getBriefReviews();
+  reviews[question.id] = { level, reviewedAt: new Date().toISOString() };
+  saveBriefReviews(reviews);
+  markQuestionCompleted(question, level === "familiar");
 }
 
 function favoriteButton(question) {
@@ -199,7 +242,9 @@ function removeMistake(question) {
 }
 
 function formatType(type) {
-  return type === "single" ? "单选" : "多选";
+  if (type === "single") return "单选";
+  if (type === "multiple") return "多选";
+  return "简答";
 }
 
 function selectedAnswer(selected) {
@@ -416,11 +461,14 @@ function renderChapterPicker() {
   ].map((chapter) => {
     const sourceQuestions = chapterQuestions(chapter.name);
     const single = sourceQuestions.filter((question) => question.type === "single").length;
+    const multiple = sourceQuestions.filter((question) => question.type === "multiple").length;
+    const brief = sourceQuestions.filter((question) => question.type === "brief").length;
     return {
       ...chapter,
       count: sourceQuestions.length,
       single,
-      multiple: sourceQuestions.length - single,
+      multiple,
+      brief,
       completed: completedCount(sourceQuestions),
     };
   });
@@ -442,11 +490,13 @@ function renderChapterPicker() {
           <div class="chapter-meta">
             <span class="pill">单选 ${chapter.single}</span>
             <span class="pill">多选 ${chapter.multiple}</span>
+            <span class="pill">简答 ${chapter.brief}</span>
           </div>
           <div class="chapter-actions">
             <button class="button" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}">全部题目</button>
             <button class="button secondary" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}" data-type="single">刷单选</button>
             <button class="button secondary" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}" data-type="multiple">刷多选</button>
+            <button class="button secondary" data-action="start-chapter" data-chapter="${escapeHtml(chapter.name)}" data-type="brief" ${chapter.brief ? "" : "disabled"}>刷简答</button>
           </div>
         </article>
       `
@@ -527,6 +577,7 @@ function renderPractice() {
   const question = practice.questions[practice.index];
   const record = getPracticeRecord(practice, question);
   const selected = new Set(record.selected);
+  const isBrief = question.type === "brief";
   const progress = Math.round(((practice.index + 1) / practice.questions.length) * 100);
   $("#practiceView").innerHTML = `
     <div class="page-head">
@@ -539,14 +590,14 @@ function renderPractice() {
     <div class="panel question-shell">
       <div class="progress-bar"><span style="width:${progress}%"></span></div>
       ${renderQuestion(question, selected, record.checked)}
-      <div id="practiceFeedback" class="feedback ${record.checked ? "show" : ""} ${
+      <div id="practiceFeedback" class="feedback ${!isBrief && record.checked ? "show" : ""} ${
         record.checked && isCorrect(question, selected) ? "ok" : "bad"
       }">
-        ${record.checked ? feedbackText(question, selected) : ""}
+        ${!isBrief && record.checked ? feedbackText(question, selected) : ""}
       </div>
       <div class="answer-actions">
         <button class="button secondary" data-action="prev-practice" ${practice.index === 0 ? "disabled" : ""}>上一题</button>
-        <button class="button" data-action="check-practice" ${record.checked ? "disabled" : ""}>提交本题</button>
+        ${isBrief ? "" : `<button class="button" data-action="check-practice" ${record.checked ? "disabled" : ""}>提交本题</button>`}
         <button class="button secondary" data-action="skip-practice" ${record.checked ? "disabled" : ""}>跳过</button>
         ${favoriteButton(question)}
         <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
@@ -558,6 +609,7 @@ function renderPractice() {
 }
 
 function renderQuestion(question, selected, checked = false) {
+  if (question.type === "brief") return renderBriefQuestion(question);
   const inputType = question.type === "single" ? "radio" : "checkbox";
   return `
     <div class="question-top">
@@ -584,6 +636,38 @@ function renderQuestion(question, selected, checked = false) {
         })
         .join("")}
     </div>
+  `;
+}
+
+function renderBriefQuestion(question) {
+  const revealed = Boolean(state.briefRevealed[question.id]);
+  const review = getBriefReviews()[question.id];
+  return `
+    <div class="question-top">
+      <span>${question.chapter}</span>
+      <span>简答题</span>
+    </div>
+    <h3 class="question-title">${question.stem}</h3>
+    <section class="brief-answer ${revealed ? "revealed" : ""}">
+      <button class="button secondary" data-action="toggle-brief-answer" data-question-id="${question.id}">${
+        revealed ? "收起参考答案" : "查看参考答案"
+      }</button>
+      ${
+        revealed
+          ? `<div class="brief-answer-content">${formatAiContent(question.referenceAnswer)}</div>
+             <div class="review-actions" aria-label="掌握程度">
+               ${["unknown", "partial", "familiar"]
+                 .map(
+                   (level) =>
+                     `<button class="review-button ${review?.level === level ? "active" : ""}" data-action="review-brief" data-level="${level}">${briefReviewLabel(
+                       level
+                     )}</button>`
+                 )
+                 .join("")}
+             </div>`
+          : ""
+      }
+    </section>
   `;
 }
 
@@ -621,6 +705,7 @@ function checkPractice() {
   const practice = state.practice;
   if (!practice) return;
   const question = practice.questions[practice.index];
+  if (question.type === "brief") return;
   const record = getPracticeRecord(practice, question);
   if (record.checked) return;
   const selected = new Set(record.selected);
@@ -633,6 +718,26 @@ function checkPractice() {
   } else {
     addMistake(question);
   }
+  Object.assign(practice, getPracticeStats(practice));
+  saveCurrentPractice();
+  renderPractice();
+}
+
+function toggleBriefAnswer(questionId) {
+  state.briefRevealed[questionId] = !state.briefRevealed[questionId];
+  renderPractice();
+}
+
+function reviewBriefQuestion(level) {
+  const practice = state.practice;
+  if (!practice) return;
+  const question = practice.questions[practice.index];
+  if (question.type !== "brief") return;
+  const record = getPracticeRecord(practice, question);
+  saveBriefReview(question, level);
+  record.checked = true;
+  record.correct = level === "familiar";
+  record.skipped = false;
   Object.assign(practice, getPracticeStats(practice));
   saveCurrentPractice();
   renderPractice();
@@ -652,6 +757,10 @@ function nextPractice() {
   const question = practice.questions[practice.index];
   const record = getPracticeRecord(practice, question);
   if (!record.checked) {
+    if (question.type === "brief") {
+      skipPractice();
+      return;
+    }
     if (record.skipped) {
       skipPractice();
       return;
@@ -712,7 +821,12 @@ function renderPracticeResult() {
   } else {
     clearPracticeResume();
   }
-  const rate = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
+  const choiceQuestions = practice.questions.filter((question) => question.type !== "brief");
+  const briefQuestions = practice.questions.filter((question) => question.type === "brief");
+  const choiceAnswered = choiceQuestions.filter((question) => practice.records?.[question.id]?.checked).length;
+  const choiceCorrect = choiceQuestions.filter((question) => practice.records?.[question.id]?.correct).length;
+  const briefReviewed = briefQuestions.filter((question) => practice.records?.[question.id]?.checked).length;
+  const rate = choiceAnswered ? Math.round((choiceCorrect / choiceAnswered) * 100) : 0;
   const returnAction = practiceReturnAction(practice.returnView);
   const returnLabel = practiceReturnLabel(practice.returnView);
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
@@ -725,8 +839,8 @@ function renderPracticeResult() {
       </div>
     </div>
     <div class="card result-card">
-      <h3>${stats.correct} / ${stats.answered}</h3>
-      <p>正确率 ${rate}% · 跳过 ${stats.skipped} 题</p>
+      <h3>${choiceQuestions.length ? `${choiceCorrect} / ${choiceAnswered}` : `${briefReviewed} 道已复习`}</h3>
+      <p>${choiceQuestions.length ? `选择题正确率 ${rate}% · ` : ""}简答已复习 ${briefReviewed} / ${briefQuestions.length} · 跳过 ${stats.skipped} 题</p>
       <div class="answer-actions" style="margin-top:16px">
         ${
           hasUnfinished
@@ -786,9 +900,9 @@ function startExam() {
   const minutes = Number($("#examMinutes").value);
   const chapter = $("#examChapter").value;
   const pool = shuffle(examQuestions(chapter));
-  const examQuestions = pool.slice(0, Math.min(count, pool.length));
+  const examItems = pool.slice(0, Math.min(count, pool.length));
   state.exam = {
-    questions: examQuestions,
+    questions: examItems,
     index: 0,
     answers: {},
     endsAt: Date.now() + minutes * 60 * 1000,
@@ -930,17 +1044,30 @@ function submitExam() {
 function renderMistakes() {
   const mistakes = getMistakes();
   const mistakeQuestions = Object.keys(mistakes).map(questionById).filter(Boolean);
+  const briefQuestions = briefReviewQueue();
+  const reviews = getBriefReviews();
+  const visibleQuestions =
+    state.reviewFilter === "choices"
+      ? mistakeQuestions
+      : state.reviewFilter === "brief"
+        ? briefQuestions
+        : [...mistakeQuestions, ...briefQuestions];
   const chapterNames = ["全部章节", ...bank.chapters.map((chapter) => chapter.name)];
   $("#mistakesView").innerHTML = `
     <div class="page-head">
       <div>
-        <h2>错题本</h2>
-        <p>共 ${mistakeQuestions.length} 道错题，答对后会自动移出。</p>
+        <h2>错题与待复习</h2>
+        <p>选择错题 ${mistakeQuestions.length} 道，简答待复习 ${briefQuestions.length} 道。</p>
       </div>
       <button class="button secondary" data-action="clear-mistakes" ${mistakeQuestions.length ? "" : "disabled"}>清空错题</button>
     </div>
+    <div class="review-filter" role="group" aria-label="复习类型">
+      <button class="filter-button ${state.reviewFilter === "all" ? "active" : ""}" data-action="set-review-filter" data-filter="all">全部待复习</button>
+      <button class="filter-button ${state.reviewFilter === "choices" ? "active" : ""}" data-action="set-review-filter" data-filter="choices">选择错题</button>
+      <button class="filter-button ${state.reviewFilter === "brief" ? "active" : ""}" data-action="set-review-filter" data-filter="brief">简答待复习</button>
+    </div>
     ${
-      mistakeQuestions.length
+      visibleQuestions.length
         ? `
       <div class="toolbar" style="margin-bottom:14px">
         <div class="field">
@@ -949,38 +1076,49 @@ function renderMistakes() {
             ${chapterNames.map((name) => `<option value="${name}">${name}</option>`).join("")}
           </select>
         </div>
-        <button class="button" data-action="start-mistakes">重做错题</button>
+        <button class="button" data-action="start-mistakes">开始重练</button>
       </div>
       <div class="result-list">
-        ${mistakeQuestions
+        ${visibleQuestions
           .map(
-            (question) => `
+            (question) => {
+              const isBrief = question.type === "brief";
+              return `
           <div class="result-row">
             <div>
-              <strong>${formatType(question.type)} · 错 ${mistakes[question.id].wrongCount} 次</strong>
+              <strong>${
+                isBrief ? `简答 · ${briefReviewLabel(reviews[question.id]?.level)}` : `${formatType(question.type)} · 错 ${mistakes[question.id].wrongCount} 次`
+              }</strong>
               <p class="muted">${question.stem}</p>
             </div>
             <div class="mistake-row-actions">
               <span class="pill">${question.chapter}</span>
-              <button class="button secondary" data-action="start-single-mistake" data-question-id="${question.id}">做这题</button>
+              <button class="button secondary" data-action="start-single-review" data-question-id="${question.id}">做这题</button>
             </div>
           </div>
-        `
+        `;
+            }
           )
           .join("")}
       </div>
     `
-        : `<div class="empty">暂时没有错题。做题时答错会自动收进这里。</div>`
+        : `<div class="empty">暂时没有待复习题。选择题答错或简答题标记“完全不会 / 有点了解”后会出现在这里。</div>`
     }
   `;
 }
 
 function startMistakePractice() {
   const chapter = $("#mistakeChapter")?.value || "全部章节";
-  const ids = Object.keys(getMistakes());
-  let pool = ids.map(questionById).filter(Boolean);
+  const choicePool = Object.keys(getMistakes()).map(questionById).filter(Boolean);
+  const briefPool = briefReviewQueue();
+  let pool =
+    state.reviewFilter === "choices"
+      ? choicePool
+      : state.reviewFilter === "brief"
+        ? briefPool
+        : [...choicePool, ...briefPool];
   if (chapter !== "全部章节") pool = pool.filter((question) => question.chapter === chapter);
-  startPractice(`错题重练 · ${chapter}`, pool, { removeOnCorrect: true, returnView: "mistakes", kind: "mistakes" });
+  startPractice(`待复习重练 · ${chapter}`, pool, { removeOnCorrect: true, returnView: "mistakes", kind: "review" });
 }
 
 function startSingleMistakePractice(questionId) {
@@ -990,6 +1128,16 @@ function startSingleMistakePractice(questionId) {
     removeOnCorrect: true,
     returnView: "mistakes",
     kind: "mistake-single",
+  });
+}
+
+function startSingleReviewPractice(questionId) {
+  const question = questionById(questionId);
+  if (!question) return;
+  startPractice(`${question.type === "brief" ? "简答待复习" : "错题重练"} · 单题`, [question], {
+    removeOnCorrect: question.type !== "brief",
+    returnView: "mistakes",
+    kind: question.type === "brief" ? "brief-review-single" : "mistake-single",
   });
 }
 
@@ -1060,13 +1208,14 @@ function renderBackup() {
   const config = getBackupConfig();
   const mistakes = getMistakes();
   const favorites = getFavorites();
+  const briefReviews = getBriefReviews();
   const aiCache = getAiCache();
   const progress = getProgress();
   $("#backupView").innerHTML = `
     <div class="page-head">
       <div>
         <h2>数据备份</h2>
-        <p>导出/导入刷题进度、错题、收藏、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
+        <p>导出/导入刷题进度、错题、简答复习、收藏、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
       </div>
     </div>
     <div class="grid backup-grid">
@@ -1108,6 +1257,7 @@ function renderBackup() {
       <div class="chapter-meta">
         <span class="pill">已刷 ${Object.keys(progress.completed).length}</span>
         <span class="pill">错题 ${Object.keys(mistakes).length}</span>
+        <span class="pill">简答复习 ${Object.keys(briefReviews).length}</span>
         <span class="pill">收藏 ${Object.keys(favorites).length}</span>
         <span class="pill">AI 解析缓存 ${Object.keys(aiCache).length}</span>
         <span class="pill">模型 ${getAiConfig().model || "未配置"}</span>
@@ -1130,7 +1280,7 @@ function buildBackupPayload() {
   const aiConfig = getAiConfig();
   return {
     app: "xi-sixiang-shuati",
-    version: 3,
+    version: 4,
     exportedAt: new Date().toISOString(),
     questionBank: {
       total: questions.length,
@@ -1139,6 +1289,7 @@ function buildBackupPayload() {
     data: {
       mistakes: getMistakes(),
       favorites: getFavorites(),
+      briefReviews: getBriefReviews(),
       progress: getProgress(),
       aiConfig: {
         apiBase: aiConfig.apiBase,
@@ -1155,6 +1306,7 @@ function applyBackupPayload(payload) {
   const data = payload.data && typeof payload.data === "object" ? payload.data : payload;
   const mistakes = data.mistakes && typeof data.mistakes === "object" ? data.mistakes : {};
   const favorites = data.favorites && typeof data.favorites === "object" ? data.favorites : getFavorites();
+  const briefReviews = data.briefReviews && typeof data.briefReviews === "object" ? data.briefReviews : getBriefReviews();
   const progress = data.progress && typeof data.progress === "object" ? data.progress : getProgress();
   const aiCache = data.aiCache && typeof data.aiCache === "object" ? data.aiCache : {};
   const importedAiConfig = data.aiConfig && typeof data.aiConfig === "object" ? data.aiConfig : {};
@@ -1162,6 +1314,7 @@ function applyBackupPayload(payload) {
 
   saveMistakes(mistakes);
   saveFavorites(favorites);
+  saveBriefReviews(briefReviews);
   saveProgress(progress);
   saveAiCache(aiCache);
   saveAiConfig({
@@ -1176,7 +1329,7 @@ function applyBackupPayload(payload) {
   state.aiStatus = {};
   state.aiExpanded = {};
   updateSidebarStats();
-  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，收藏 ${Object.keys(getFavorites()).length} 题，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
+  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，简答复习 ${Object.keys(getBriefReviews()).length} 题，收藏 ${Object.keys(getFavorites()).length} 题，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
 }
 
 function exportBackupFile() {
@@ -1458,7 +1611,12 @@ function renderAiPanel(question, selected) {
   const expanded = Boolean(state.aiExpanded[key]);
   if (!status.loading && !status.error && (!content || !expanded)) return "";
 
-  const chosen = selectedAnswer(selected) || "未作答";
+  const chosen =
+    question.type === "brief"
+      ? getBriefReviews()[question.id]?.level
+        ? briefReviewLabel(getBriefReviews()[question.id].level)
+        : "未标记掌握程度"
+      : selectedAnswer(selected) || "未作答";
   const body = status.loading ? "正在请求 AI 解析..." : status.error || content;
   const classes = ["ai-panel"];
   if (status.error) classes.push("error");
@@ -1569,6 +1727,16 @@ function renderMarkdown(value) {
 }
 
 function buildPrompt(question, selected) {
+  if (question.type === "brief") {
+    const review = getBriefReviews()[question.id];
+    return `题型：简答题
+章节：${question.chapter}
+题目：${question.stem}
+参考答案：${question.referenceAnswer}
+用户掌握状态：${review ? briefReviewLabel(review.level) : "未标记"}
+
+请先提炼参考答案的核心要点；再按要点分层说明如何记忆；最后给出简短的复习提示。`;
+  }
   const options = Object.entries(question.options)
     .map(([label, text]) => `${label}. ${text}`)
     .join("\n");
@@ -1682,7 +1850,7 @@ document.addEventListener("click", (event) => {
   if (action === "start-chapter") {
     const chapter = target.dataset.chapter;
     const type = target.dataset.type || "";
-    const typeTitle = type === "single" ? " · 单选" : type === "multiple" ? " · 多选" : "";
+    const typeTitle = type === "single" ? " · 单选" : type === "multiple" ? " · 多选" : type === "brief" ? " · 简答" : "";
     startPractice(`章节刷题 · ${chapter}${typeTitle}`, chapterQuestions(chapter, type), { kind: "chapter" });
   }
   if (action === "back-practice") showView(state.practice?.returnView || "chapter");
@@ -1707,6 +1875,11 @@ document.addEventListener("click", (event) => {
   if (action === "submit-exam") submitExam();
   if (action === "start-mistakes") startMistakePractice();
   if (action === "start-single-mistake") startSingleMistakePractice(target.dataset.questionId);
+  if (action === "start-single-review") startSingleReviewPractice(target.dataset.questionId);
+  if (action === "set-review-filter") {
+    state.reviewFilter = ["all", "choices", "brief"].includes(target.dataset.filter) ? target.dataset.filter : "all";
+    renderMistakes();
+  }
   if (action === "start-favorites") startFavoritePractice();
   if (action === "start-single-favorite") startSingleFavoritePractice(target.dataset.questionId);
   if (action === "toggle-favorite") {
@@ -1716,6 +1889,8 @@ document.addEventListener("click", (event) => {
     else renderActiveQuestion();
   }
   if (action === "ai-explain") explainQuestion(target.dataset.questionId);
+  if (action === "toggle-brief-answer") toggleBriefAnswer(target.dataset.questionId);
+  if (action === "review-brief") reviewBriefQuestion(target.dataset.level);
   if (action === "fetch-models") fetchModels();
   if (action === "save-ai-config") saveConfigFromForm();
   if (action === "clear-ai-cache") {

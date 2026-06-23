@@ -383,6 +383,60 @@ button {
   color: var(--danger);
 }
 
+.brief-answer {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #d3dde8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.brief-answer.revealed {
+  background: #f5fbf8;
+  border-color: rgba(31, 122, 77, 0.35);
+}
+
+.brief-answer-content {
+  color: #26364a;
+  line-height: 1.75;
+}
+
+.review-actions,
+.review-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-button,
+.filter-button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+  color: #344054;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.review-button:hover,
+.filter-button:hover {
+  background: #eef2f7;
+}
+
+.review-button.active,
+.filter-button.active {
+  border-color: var(--teal);
+  background: #d9ebe4;
+  color: #185b48;
+}
+
+.review-filter {
+  margin: 0 0 14px;
+}
+
 .progress-bar {
   height: 10px;
   overflow: hidden;
