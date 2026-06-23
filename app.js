@@ -6,6 +6,7 @@ const AI_CACHE_KEY = "xi-quiz-ai-cache-v1";
 const BACKUP_CONFIG_KEY = "xi-quiz-backup-config-v1";
 const BACKUP_FILENAME = "xi-quiz-backup.json";
 const PROGRESS_KEY = "xi-quiz-progress-v1";
+const FAVORITES_KEY = "xi-quiz-favorites-v1";
 const EXAM_EXCLUDED_CHAPTERS = new Set([
   "第十三章 维护和塑造国家安全",
   "第十四章 建设巩固国防和强大人民军队",
@@ -37,6 +38,35 @@ function saveMistakes(value) {
   updateSidebarStats();
 }
 
+function getFavorites() {
+  const saved = readJson(FAVORITES_KEY, {});
+  if (!saved || typeof saved !== "object") return {};
+  return Object.fromEntries(Object.entries(saved).filter(([id]) => questionById(id)));
+}
+
+function saveFavorites(value) {
+  const valid = Object.fromEntries(Object.entries(value || {}).filter(([id]) => questionById(id)));
+  localStorage.setItem(FAVORITES_KEY, JSON.stringify(valid));
+}
+
+function isFavorite(question) {
+  return Boolean(getFavorites()[question.id]);
+}
+
+function toggleFavorite(question) {
+  const favorites = getFavorites();
+  if (favorites[question.id]) delete favorites[question.id];
+  else favorites[question.id] = { savedAt: new Date().toISOString() };
+  saveFavorites(favorites);
+}
+
+function favoriteButton(question) {
+  const saved = isFavorite(question);
+  return `<button class="button secondary ${saved ? "favorited" : ""}" data-action="toggle-favorite" data-question-id="${question.id}">${
+    saved ? "取消收藏" : "收藏"
+  }</button>`;
+}
+
 function sanitizePracticeSnapshot(value) {
   if (!value || typeof value !== "object" || !Array.isArray(value.questionIds)) return null;
   const questionIds = value.questionIds.filter((id) => typeof id === "string" && questionById(id));
@@ -64,7 +94,7 @@ function sanitizePracticeSnapshot(value) {
     index: Math.min(Math.max(Number(value.index) || 0, 0), questionIds.length - 1),
     records,
     removeOnCorrect: Boolean(value.removeOnCorrect),
-    returnView: value.returnView === "mistakes" ? "mistakes" : "chapter",
+    returnView: normalizeReturnView(value.returnView),
     kind: typeof value.kind === "string" ? value.kind : "chapter",
   };
 }
@@ -297,6 +327,7 @@ function showView(name) {
   if (name === "chapter") renderChapterPicker();
   if (name === "exam") renderExamSetup();
   if (name === "mistakes") renderMistakes();
+  if (name === "favorites") renderFavorites();
   if (name === "backup") renderBackup();
   if (name === "config") safeRenderConfig();
 }
@@ -348,6 +379,14 @@ function renderHome() {
           <span class="pill">${Object.keys(getMistakes()).length} 道错题</span>
         </div>
         <button class="button" data-action="go-mistakes">查看错题</button>
+      </article>
+      <article class="card mode-card">
+        <h3>收藏题库</h3>
+        <p>把值得反复看的题收进这里，按章节查找或集中重练。</p>
+        <div class="chapter-meta">
+          <span class="pill">${Object.keys(getFavorites()).length} 道收藏</span>
+        </div>
+        <button class="button" data-action="go-favorites">查看收藏</button>
       </article>
       <article class="card mode-card">
         <h3>AI 解析</h3>
@@ -426,12 +465,28 @@ function startPractice(title, sourceQuestions, options = {}) {
     correct: 0,
     answered: 0,
     removeOnCorrect: Boolean(options.removeOnCorrect),
-    returnView: options.returnView === "mistakes" ? "mistakes" : "chapter",
+    returnView: normalizeReturnView(options.returnView),
     kind: options.kind || "chapter",
   };
   if (state.practice.questions.length) saveCurrentPractice();
   else clearPracticeResume();
   showPractice();
+}
+
+function normalizeReturnView(value) {
+  return value === "mistakes" || value === "favorites" ? value : "chapter";
+}
+
+function practiceReturnLabel(returnView) {
+  if (returnView === "mistakes") return "错题本";
+  if (returnView === "favorites") return "收藏题库";
+  return "选择";
+}
+
+function practiceReturnAction(returnView) {
+  if (returnView === "mistakes") return "go-mistakes";
+  if (returnView === "favorites") return "go-favorites";
+  return "go-chapter";
 }
 
 function getPracticeRecord(practice, question) {
@@ -479,7 +534,7 @@ function renderPractice() {
         <h2>${practice.title}</h2>
         <p>第 ${practice.index + 1} / ${practice.questions.length} 题 · ${formatType(question.type)} · PDF 第 ${question.sourcePage} 页</p>
       </div>
-      <button class="button secondary" data-action="back-practice">返回${practice.returnView === "mistakes" ? "错题本" : "选择"}</button>
+      <button class="button secondary" data-action="back-practice">返回${practiceReturnLabel(practice.returnView)}</button>
     </div>
     <div class="panel question-shell">
       <div class="progress-bar"><span style="width:${progress}%"></span></div>
@@ -493,6 +548,7 @@ function renderPractice() {
         <button class="button secondary" data-action="prev-practice" ${practice.index === 0 ? "disabled" : ""}>上一题</button>
         <button class="button" data-action="check-practice" ${record.checked ? "disabled" : ""}>提交本题</button>
         <button class="button secondary" data-action="skip-practice" ${record.checked ? "disabled" : ""}>跳过</button>
+        ${favoriteButton(question)}
         <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
         <button class="button secondary" data-action="next-practice">${practice.index + 1 === practice.questions.length ? "完成" : "下一题"}</button>
       </div>
@@ -657,6 +713,8 @@ function renderPracticeResult() {
     clearPracticeResume();
   }
   const rate = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
+  const returnAction = practiceReturnAction(practice.returnView);
+  const returnLabel = practiceReturnLabel(practice.returnView);
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active-view"));
   $("#resultView").classList.add("active-view");
   $("#resultView").innerHTML = `
@@ -673,14 +731,12 @@ function renderPracticeResult() {
         ${
           hasUnfinished
             ? `<button class="button" data-action="continue-unfinished">继续未做题</button>
-              <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">返回${
-                practice.returnView === "mistakes" ? "错题本" : "选择"
-              }</button>`
-            : `<button class="button" data-action="${practice.returnView === "mistakes" ? "go-mistakes" : "go-chapter"}">${
-                practice.returnView === "mistakes" ? "返回错题本" : "继续章节刷题"
+              <button class="button secondary" data-action="${returnAction}">返回${returnLabel}</button>`
+            : `<button class="button" data-action="${returnAction}">${
+                practice.returnView === "chapter" ? "继续章节刷题" : `返回${returnLabel}`
               }</button>
-              <button class="button secondary" data-action="${practice.returnView === "mistakes" ? "go-chapter" : "go-mistakes"}">${
-                practice.returnView === "mistakes" ? "章节刷题" : "查看错题本"
+              <button class="button secondary" data-action="${practice.returnView === "chapter" ? "go-mistakes" : "go-chapter"}">${
+                practice.returnView === "chapter" ? "查看错题本" : "章节刷题"
               }</button>`
         }
       </div>
@@ -785,6 +841,7 @@ function renderExam() {
         <div class="exam-actions">
           <button class="button secondary" data-action="prev-exam" ${exam.index === 0 ? "disabled" : ""}>上一题</button>
           <button class="button secondary" data-action="next-exam" ${exam.index + 1 === exam.questions.length ? "disabled" : ""}>下一题</button>
+          ${favoriteButton(question)}
           <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
           <button class="button" data-action="submit-exam">交卷</button>
         </div>
@@ -936,16 +993,80 @@ function startSingleMistakePractice(questionId) {
   });
 }
 
+function renderFavorites() {
+  const favorites = getFavorites();
+  const favoriteQuestions = Object.keys(favorites).map(questionById).filter(Boolean);
+  const chapterNames = ["全部章节", ...bank.chapters.map((chapter) => chapter.name)];
+  $("#favoritesView").innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2>收藏题库</h2>
+        <p>共 ${favoriteQuestions.length} 道收藏题，随时回来看重点和易错点。</p>
+      </div>
+      <button class="button secondary" data-action="clear-favorites" ${favoriteQuestions.length ? "" : "disabled"}>清空收藏</button>
+    </div>
+    ${
+      favoriteQuestions.length
+        ? `
+      <div class="toolbar" style="margin-bottom:14px">
+        <div class="field">
+          <label for="favoriteChapter">章节筛选</label>
+          <select id="favoriteChapter">
+            ${chapterNames.map((name) => `<option value="${name}">${name}</option>`).join("")}
+          </select>
+        </div>
+        <button class="button" data-action="start-favorites">重做收藏</button>
+      </div>
+      <div class="result-list">
+        ${favoriteQuestions
+          .map(
+            (question) => `
+          <div class="result-row">
+            <div>
+              <strong>${formatType(question.type)}</strong>
+              <p class="muted">${question.stem}</p>
+            </div>
+            <div class="mistake-row-actions">
+              <span class="pill">${question.chapter}</span>
+              <button class="button secondary" data-action="start-single-favorite" data-question-id="${question.id}">做这题</button>
+              <button class="button ghost" data-action="toggle-favorite" data-question-id="${question.id}">取消收藏</button>
+            </div>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    `
+        : `<div class="empty">暂时没有收藏题。做题时点击“收藏”，题目就会出现在这里。</div>`
+    }
+  `;
+}
+
+function startFavoritePractice() {
+  const chapter = $("#favoriteChapter")?.value || "全部章节";
+  const ids = Object.keys(getFavorites());
+  let pool = ids.map(questionById).filter(Boolean);
+  if (chapter !== "全部章节") pool = pool.filter((question) => question.chapter === chapter);
+  startPractice(`收藏重练 · ${chapter}`, pool, { returnView: "favorites", kind: "favorites" });
+}
+
+function startSingleFavoritePractice(questionId) {
+  const question = questionById(questionId);
+  if (!question) return;
+  startPractice(`收藏重练 · 单题`, [question], { returnView: "favorites", kind: "favorite-single" });
+}
+
 function renderBackup() {
   const config = getBackupConfig();
   const mistakes = getMistakes();
+  const favorites = getFavorites();
   const aiCache = getAiCache();
   const progress = getProgress();
   $("#backupView").innerHTML = `
     <div class="page-head">
       <div>
         <h2>数据备份</h2>
-        <p>导出/导入刷题进度、错题、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
+        <p>导出/导入刷题进度、错题、收藏、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
       </div>
     </div>
     <div class="grid backup-grid">
@@ -987,6 +1108,7 @@ function renderBackup() {
       <div class="chapter-meta">
         <span class="pill">已刷 ${Object.keys(progress.completed).length}</span>
         <span class="pill">错题 ${Object.keys(mistakes).length}</span>
+        <span class="pill">收藏 ${Object.keys(favorites).length}</span>
         <span class="pill">AI 解析缓存 ${Object.keys(aiCache).length}</span>
         <span class="pill">模型 ${getAiConfig().model || "未配置"}</span>
       </div>
@@ -1008,7 +1130,7 @@ function buildBackupPayload() {
   const aiConfig = getAiConfig();
   return {
     app: "xi-sixiang-shuati",
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     questionBank: {
       total: questions.length,
@@ -1016,6 +1138,7 @@ function buildBackupPayload() {
     },
     data: {
       mistakes: getMistakes(),
+      favorites: getFavorites(),
       progress: getProgress(),
       aiConfig: {
         apiBase: aiConfig.apiBase,
@@ -1031,12 +1154,14 @@ function applyBackupPayload(payload) {
   if (!payload || typeof payload !== "object") throw new Error("备份文件格式不正确。");
   const data = payload.data && typeof payload.data === "object" ? payload.data : payload;
   const mistakes = data.mistakes && typeof data.mistakes === "object" ? data.mistakes : {};
+  const favorites = data.favorites && typeof data.favorites === "object" ? data.favorites : getFavorites();
   const progress = data.progress && typeof data.progress === "object" ? data.progress : getProgress();
   const aiCache = data.aiCache && typeof data.aiCache === "object" ? data.aiCache : {};
   const importedAiConfig = data.aiConfig && typeof data.aiConfig === "object" ? data.aiConfig : {};
   const currentAiConfig = getAiConfig();
 
   saveMistakes(mistakes);
+  saveFavorites(favorites);
   saveProgress(progress);
   saveAiCache(aiCache);
   saveAiConfig({
@@ -1051,7 +1176,7 @@ function applyBackupPayload(payload) {
   state.aiStatus = {};
   state.aiExpanded = {};
   updateSidebarStats();
-  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
+  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，收藏 ${Object.keys(getFavorites()).length} 题，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
 }
 
 function exportBackupFile() {
@@ -1546,6 +1671,7 @@ document.addEventListener("click", (event) => {
   if (action === "go-chapter") showView("chapter");
   if (action === "go-exam") showView("exam");
   if (action === "go-mistakes") showView("mistakes");
+  if (action === "go-favorites") showView("favorites");
   if (action === "go-config") showView("config");
   if (action === "go-backup") showView("backup");
   if (action === "resume-practice") restoreLastPractice();
@@ -1581,6 +1707,14 @@ document.addEventListener("click", (event) => {
   if (action === "submit-exam") submitExam();
   if (action === "start-mistakes") startMistakePractice();
   if (action === "start-single-mistake") startSingleMistakePractice(target.dataset.questionId);
+  if (action === "start-favorites") startFavoritePractice();
+  if (action === "start-single-favorite") startSingleFavoritePractice(target.dataset.questionId);
+  if (action === "toggle-favorite") {
+    const question = questionById(target.dataset.questionId);
+    if (question) toggleFavorite(question);
+    if ($("#favoritesView").classList.contains("active-view")) renderFavorites();
+    else renderActiveQuestion();
+  }
   if (action === "ai-explain") explainQuestion(target.dataset.questionId);
   if (action === "fetch-models") fetchModels();
   if (action === "save-ai-config") saveConfigFromForm();
@@ -1609,6 +1743,10 @@ document.addEventListener("click", (event) => {
   if (action === "clear-mistakes") {
     saveMistakes({});
     renderMistakes();
+  }
+  if (action === "clear-favorites") {
+    saveFavorites({});
+    renderFavorites();
   }
 });
 

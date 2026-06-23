@@ -276,6 +276,15 @@ button {
   background: #dce4ef;
 }
 
+.button.favorited {
+  background: #f2d6c4;
+  color: #7a251f;
+}
+
+.button.favorited:hover {
+  background: #ebc7b2;
+}
+
 .button.ghost {
   background: transparent;
   color: var(--blue);
