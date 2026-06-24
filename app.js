@@ -8,6 +8,7 @@ const BACKUP_FILENAME = "xi-quiz-backup.json";
 const PROGRESS_KEY = "xi-quiz-progress-v1";
 const FAVORITES_KEY = "xi-quiz-favorites-v1";
 const BRIEF_REVIEW_KEY = "xi-quiz-brief-reviews-v1";
+const BRIEF_ANSWER_OVERRIDE_KEY = "xi-quiz-brief-answer-overrides-v1";
 const EXAM_EXCLUDED_CHAPTERS = new Set([
   "第十三章 维护和塑造国家安全",
   "第十四章 建设巩固国防和强大人民军队",
@@ -21,6 +22,9 @@ const state = {
   aiStatus: {},
   aiExpanded: {},
   briefRevealed: {},
+  editingBriefAnswerId: "",
+  briefEditMessage: "",
+  briefEditMessageId: "",
   reviewFilter: "all",
   searchQuery: "",
   configMessage: "",
@@ -81,6 +85,30 @@ function saveBriefReviews(value) {
     )
   );
   localStorage.setItem(BRIEF_REVIEW_KEY, JSON.stringify(valid));
+}
+
+function getBriefAnswerOverrides() {
+  const saved = readJson(BRIEF_ANSWER_OVERRIDE_KEY, {});
+  if (!saved || typeof saved !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(saved).filter(
+      ([id, value]) => questionById(id)?.type === "brief" && typeof value === "string" && value.trim()
+    )
+  );
+}
+
+function saveBriefAnswerOverrides(value) {
+  const valid = Object.fromEntries(
+    Object.entries(value || {}).filter(
+      ([id, answer]) => questionById(id)?.type === "brief" && typeof answer === "string" && answer.trim()
+    )
+  );
+  localStorage.setItem(BRIEF_ANSWER_OVERRIDE_KEY, JSON.stringify(valid));
+}
+
+function effectiveBriefAnswer(question) {
+  if (question?.type !== "brief") return "";
+  return getBriefAnswerOverrides()[question.id] || question.referenceAnswer || "";
 }
 
 function briefReviewLabel(level) {
@@ -314,6 +342,25 @@ function saveAiCache(cache) {
   localStorage.setItem(AI_CACHE_KEY, JSON.stringify(cache));
 }
 
+function clearQuestionAiState(question) {
+  const cache = getAiCache();
+  const suffix = `:${question.id}`;
+  let cacheChanged = false;
+  Object.keys(cache).forEach((key) => {
+    if (key.endsWith(suffix)) {
+      delete cache[key];
+      cacheChanged = true;
+    }
+  });
+  if (cacheChanged) saveAiCache(cache);
+
+  [state.aiStatus, state.aiExpanded].forEach((collection) => {
+    Object.keys(collection).forEach((key) => {
+      if (key.endsWith(suffix) || key === `unconfigured:${question.id}`) delete collection[key];
+    });
+  });
+}
+
 function getBackupConfig() {
   const saved = readJson(BACKUP_CONFIG_KEY, {});
   const config = saved && typeof saved === "object" ? saved : {};
@@ -400,6 +447,19 @@ function renderHome() {
           </section>`
         : ""
     }
+    <section class="announcement" aria-label="更新公告">
+      <h3>更新公告</h3>
+      <div class="announcement-grid">
+        <div>
+          <strong>已有功能</strong>
+          <p>章节刷题、单选随机考试、错题与待复习、收藏题库、关键词搜索、简答自评、AI 解析、数据备份与 GitHub Gist 同步。</p>
+        </div>
+        <div>
+          <strong>本次更新</strong>
+          <p>简答题答案重写；重新 AI 解析。</p>
+        </div>
+      </div>
+    </section>
     <div class="grid mode-grid">
       <article class="card mode-card">
         <h3>章节刷题</h3>
@@ -605,6 +665,7 @@ function renderPractice() {
         <button class="button secondary" data-action="skip-practice" ${record.checked ? "disabled" : ""}>跳过</button>
         ${favoriteButton(question)}
         <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
+        ${aiRedoButton(question)}
         <button class="button secondary" data-action="next-practice">${practice.index + 1 === practice.questions.length ? "完成" : "下一题"}</button>
       </div>
       ${renderAiPanel(question, selected)}
@@ -646,6 +707,10 @@ function renderQuestion(question, selected, checked = false) {
 function renderBriefQuestion(question) {
   const revealed = Boolean(state.briefRevealed[question.id]);
   const review = getBriefReviews()[question.id];
+  const overrides = getBriefAnswerOverrides();
+  const answer = effectiveBriefAnswer(question);
+  const editing = state.editingBriefAnswerId === question.id;
+  const editMessage = state.briefEditMessageId === question.id ? state.briefEditMessage : "";
   return `
     <div class="question-top">
       <span>${question.chapter}</span>
@@ -658,7 +723,30 @@ function renderBriefQuestion(question) {
       }</button>
       ${
         revealed
-          ? `<div class="brief-answer-content">${formatAiContent(question.referenceAnswer)}</div>
+          ? `<div class="brief-answer-content">${formatAiContent(answer)}</div>
+             <div class="brief-answer-actions">
+               <button class="button ghost" data-action="edit-brief-answer" data-question-id="${question.id}">编辑答案</button>
+               ${
+                 overrides[question.id]
+                   ? `<button class="button ghost" data-action="restore-brief-answer" data-question-id="${question.id}">恢复原答案</button>`
+                   : ""
+               }
+             </div>
+             ${
+               editing
+                 ? `<div class="brief-answer-editor-wrap">
+                      <label for="briefAnswerEditor">参考答案</label>
+                      <textarea id="briefAnswerEditor" class="brief-answer-editor" rows="9">${escapeHtml(answer)}</textarea>
+                      <div class="brief-answer-actions">
+                        <button class="button" data-action="save-brief-answer" data-question-id="${question.id}">保存答案</button>
+                        <button class="button secondary" data-action="cancel-brief-answer">取消</button>
+                      </div>
+                      <div class="notice ${editMessage ? "show" : ""}">${escapeHtml(editMessage)}</div>
+                    </div>`
+                 : editMessage
+                   ? `<div class="notice show">${escapeHtml(editMessage)}</div>`
+                   : ""
+             }
              <div class="review-actions" aria-label="掌握程度">
                ${["unknown", "partial", "familiar"]
                  .map(
@@ -729,6 +817,64 @@ function checkPractice() {
 
 function toggleBriefAnswer(questionId) {
   state.briefRevealed[questionId] = !state.briefRevealed[questionId];
+  if (!state.briefRevealed[questionId] && state.editingBriefAnswerId === questionId) {
+    state.editingBriefAnswerId = "";
+    state.briefEditMessage = "";
+    state.briefEditMessageId = "";
+  }
+  renderPractice();
+}
+
+function editBriefAnswer(questionId) {
+  const question = questionById(questionId);
+  if (!question || question.type !== "brief") return;
+  state.briefRevealed[questionId] = true;
+  state.editingBriefAnswerId = questionId;
+  state.briefEditMessage = "";
+  state.briefEditMessageId = "";
+  renderPractice();
+}
+
+function cancelBriefAnswerEdit() {
+  state.editingBriefAnswerId = "";
+  state.briefEditMessage = "";
+  state.briefEditMessageId = "";
+  renderPractice();
+}
+
+function saveBriefAnswerEdit(questionId) {
+  const question = questionById(questionId);
+  const answer = $("#briefAnswerEditor")?.value?.trim();
+  if (!question || question.type !== "brief") return;
+  if (!answer) {
+    state.briefEditMessage = "参考答案不能为空。";
+    state.briefEditMessageId = question.id;
+    renderPractice();
+    return;
+  }
+
+  const overrides = getBriefAnswerOverrides();
+  if (answer === String(question.referenceAnswer || "").trim()) delete overrides[question.id];
+  else overrides[question.id] = answer;
+  saveBriefAnswerOverrides(overrides);
+  clearQuestionAiState(question);
+  state.editingBriefAnswerId = "";
+  state.briefEditMessage = "参考答案已保存，相关 AI 解析已清除。";
+  state.briefEditMessageId = question.id;
+  renderPractice();
+}
+
+function restoreOriginalBriefAnswer(questionId) {
+  const question = questionById(questionId);
+  if (!question || question.type !== "brief") return;
+  const overrides = getBriefAnswerOverrides();
+  if (!overrides[question.id]) return;
+  delete overrides[question.id];
+  saveBriefAnswerOverrides(overrides);
+  clearQuestionAiState(question);
+  state.editingBriefAnswerId = "";
+  state.briefEditMessage = "已恢复 PDF 原答案，相关 AI 解析已清除。";
+  state.briefEditMessageId = question.id;
   renderPractice();
 }
 
@@ -961,6 +1107,7 @@ function renderExam() {
           <button class="button secondary" data-action="next-exam" ${exam.index + 1 === exam.questions.length ? "disabled" : ""}>下一题</button>
           ${favoriteButton(question)}
           <button class="button secondary" data-action="ai-explain" data-question-id="${question.id}">${aiActionLabel(question)}</button>
+          ${aiRedoButton(question)}
           <button class="button" data-action="submit-exam">交卷</button>
         </div>
         ${renderAiPanel(question, selected)}
@@ -1157,7 +1304,7 @@ function searchQuestions(query) {
     const searchable = [
       question.stem,
       ...Object.values(question.options || {}),
-      question.referenceAnswer || "",
+      question.type === "brief" ? effectiveBriefAnswer(question) : "",
       question.chapter,
     ]
       .join(" ")
@@ -1295,13 +1442,14 @@ function renderBackup() {
   const mistakes = getMistakes();
   const favorites = getFavorites();
   const briefReviews = getBriefReviews();
+  const briefAnswerOverrides = getBriefAnswerOverrides();
   const aiCache = getAiCache();
   const progress = getProgress();
   $("#backupView").innerHTML = `
     <div class="page-head">
       <div>
         <h2>数据备份</h2>
-        <p>导出/导入刷题进度、错题、简答复习、收藏、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
+        <p>导出/导入刷题进度、错题、简答复习、答案重写、收藏、AI 配置和解析缓存；AI key 不会进入备份文件。</p>
       </div>
     </div>
     <div class="grid backup-grid">
@@ -1344,6 +1492,7 @@ function renderBackup() {
         <span class="pill">已刷 ${Object.keys(progress.completed).length}</span>
         <span class="pill">错题 ${Object.keys(mistakes).length}</span>
         <span class="pill">简答复习 ${Object.keys(briefReviews).length}</span>
+        <span class="pill">答案重写 ${Object.keys(briefAnswerOverrides).length}</span>
         <span class="pill">收藏 ${Object.keys(favorites).length}</span>
         <span class="pill">AI 解析缓存 ${Object.keys(aiCache).length}</span>
         <span class="pill">模型 ${getAiConfig().model || "未配置"}</span>
@@ -1366,7 +1515,7 @@ function buildBackupPayload() {
   const aiConfig = getAiConfig();
   return {
     app: "xi-sixiang-shuati",
-    version: 4,
+    version: 5,
     exportedAt: new Date().toISOString(),
     questionBank: {
       total: questions.length,
@@ -1376,6 +1525,7 @@ function buildBackupPayload() {
       mistakes: getMistakes(),
       favorites: getFavorites(),
       briefReviews: getBriefReviews(),
+      briefAnswerOverrides: getBriefAnswerOverrides(),
       progress: getProgress(),
       aiConfig: {
         apiBase: aiConfig.apiBase,
@@ -1393,6 +1543,10 @@ function applyBackupPayload(payload) {
   const mistakes = data.mistakes && typeof data.mistakes === "object" ? data.mistakes : {};
   const favorites = data.favorites && typeof data.favorites === "object" ? data.favorites : getFavorites();
   const briefReviews = data.briefReviews && typeof data.briefReviews === "object" ? data.briefReviews : getBriefReviews();
+  const briefAnswerOverrides =
+    data.briefAnswerOverrides && typeof data.briefAnswerOverrides === "object"
+      ? data.briefAnswerOverrides
+      : getBriefAnswerOverrides();
   const progress = data.progress && typeof data.progress === "object" ? data.progress : getProgress();
   const aiCache = data.aiCache && typeof data.aiCache === "object" ? data.aiCache : {};
   const importedAiConfig = data.aiConfig && typeof data.aiConfig === "object" ? data.aiConfig : {};
@@ -1401,6 +1555,7 @@ function applyBackupPayload(payload) {
   saveMistakes(mistakes);
   saveFavorites(favorites);
   saveBriefReviews(briefReviews);
+  saveBriefAnswerOverrides(briefAnswerOverrides);
   saveProgress(progress);
   saveAiCache(aiCache);
   saveAiConfig({
@@ -1414,8 +1569,11 @@ function applyBackupPayload(payload) {
   });
   state.aiStatus = {};
   state.aiExpanded = {};
+  state.editingBriefAnswerId = "";
+  state.briefEditMessage = "";
+  state.briefEditMessageId = "";
   updateSidebarStats();
-  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，简答复习 ${Object.keys(getBriefReviews()).length} 题，收藏 ${Object.keys(getFavorites()).length} 题，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
+  state.backupMessage = `已导入备份：已刷 ${Object.keys(getProgress().completed).length} 题，错题 ${Object.keys(mistakes).length} 道，简答复习 ${Object.keys(getBriefReviews()).length} 题，答案重写 ${Object.keys(getBriefAnswerOverrides()).length} 条，收藏 ${Object.keys(getFavorites()).length} 题，AI 解析缓存 ${Object.keys(aiCache).length} 条。`;
 }
 
 function exportBackupFile() {
@@ -1682,9 +1840,17 @@ function aiActionLabel(question) {
   const status = state.aiStatus[key] || {};
   const cached = config.model ? getAiCache()[aiCacheKey(question, config.model)] : "";
   if (status.loading) return "解析中...";
-  if (status.error) return "重新解析";
   if (status.content || cached) return state.aiExpanded[key] ? "收起解析" : "展开解析";
+  if (status.error) return "AI 解析";
   return "AI 解析";
+}
+
+function aiRedoButton(question) {
+  const config = getAiConfig();
+  const status = state.aiStatus[aiStatusKey(question, config.model)] || {};
+  return `<button class="icon-button" data-action="redo-ai-explain" data-question-id="${question.id}" title="重新生成解析" aria-label="重新生成解析" ${
+    status.loading ? "disabled" : ""
+  }>↻</button>`;
 }
 
 function renderAiPanel(question, selected) {
@@ -1703,10 +1869,10 @@ function renderAiPanel(question, selected) {
         ? briefReviewLabel(getBriefReviews()[question.id].level)
         : "未标记掌握程度"
       : selectedAnswer(selected) || "未作答";
-  const body = status.loading ? "正在请求 AI 解析..." : status.error || content;
+  const body = status.loading ? "正在请求 AI 解析..." : content || status.error || "";
   const classes = ["ai-panel"];
-  if (status.error) classes.push("error");
-  if (content && !status.error) classes.push("ready");
+  if (status.error && !content) classes.push("error");
+  if (content) classes.push("ready");
 
   return `
     <section class="${classes.join(" ")}">
@@ -1714,6 +1880,7 @@ function renderAiPanel(question, selected) {
         <strong>AI 解析</strong>
         <span>你的答案：${chosen}</span>
       </div>
+      ${status.error && content ? `<div class="ai-retry-error">${escapeHtml(status.error)}；已保留上次解析。</div>` : ""}
       <div class="ai-content">${formatAiContent(body)}</div>
     </section>
   `;
@@ -1818,7 +1985,7 @@ function buildPrompt(question, selected) {
     return `题型：简答题
 章节：${question.chapter}
 题目：${question.stem}
-参考答案：${question.referenceAnswer}
+参考答案：${effectiveBriefAnswer(question)}
 用户掌握状态：${review ? briefReviewLabel(review.level) : "未标记"}
 
 请先提炼参考答案的核心要点；再按要点分层说明如何记忆；最后给出简短的复习提示。`;
@@ -1851,7 +2018,7 @@ function renderActiveQuestion() {
   if ($("#examView").classList.contains("active-view")) renderExam();
 }
 
-async function explainQuestion(questionId) {
+async function requestAiExplanation(questionId, { force = false } = {}) {
   const question = questionById(questionId);
   if (!question) return;
 
@@ -1869,7 +2036,7 @@ async function explainQuestion(questionId) {
   const currentStatus = state.aiStatus[statusKey] || {};
   if (currentStatus.loading) return;
 
-  if (cache[cacheKey] || currentStatus.content) {
+  if (!force && (cache[cacheKey] || currentStatus.content)) {
     state.aiExpanded[statusKey] = !state.aiExpanded[statusKey];
     renderActiveQuestion();
     return;
@@ -1882,7 +2049,10 @@ async function explainQuestion(questionId) {
   }
 
   state.aiExpanded[statusKey] = true;
-  state.aiStatus[statusKey] = { loading: true };
+  state.aiStatus[statusKey] = {
+    loading: true,
+    content: force ? currentStatus.content || cache[cacheKey] || "" : "",
+  };
   renderActiveQuestion();
   try {
     const response = await fetch(buildApiUrl(config.apiBase, "chat/completions"), {
@@ -1912,9 +2082,20 @@ async function explainQuestion(questionId) {
     saveAiCache(cache);
     state.aiStatus[statusKey] = { content };
   } catch (error) {
-    state.aiStatus[statusKey] = { error: explainNetworkError(error) };
+    state.aiStatus[statusKey] = {
+      content: force ? currentStatus.content || cache[cacheKey] || "" : "",
+      error: explainNetworkError(error),
+    };
   }
   renderActiveQuestion();
+}
+
+function explainQuestion(questionId) {
+  return requestAiExplanation(questionId);
+}
+
+function redoAiExplanation(questionId) {
+  return requestAiExplanation(questionId, { force: true });
 }
 
 document.addEventListener("click", (event) => {
@@ -1979,7 +2160,12 @@ document.addEventListener("click", (event) => {
     else renderActiveQuestion();
   }
   if (action === "ai-explain") explainQuestion(target.dataset.questionId);
+  if (action === "redo-ai-explain") redoAiExplanation(target.dataset.questionId);
   if (action === "toggle-brief-answer") toggleBriefAnswer(target.dataset.questionId);
+  if (action === "edit-brief-answer") editBriefAnswer(target.dataset.questionId);
+  if (action === "save-brief-answer") saveBriefAnswerEdit(target.dataset.questionId);
+  if (action === "cancel-brief-answer") cancelBriefAnswerEdit();
+  if (action === "restore-brief-answer") restoreOriginalBriefAnswer(target.dataset.questionId);
   if (action === "review-brief") reviewBriefQuestion(target.dataset.level);
   if (action === "fetch-models") fetchModels();
   if (action === "save-ai-config") saveConfigFromForm();
