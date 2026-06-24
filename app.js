@@ -22,6 +22,7 @@ const state = {
   aiExpanded: {},
   briefRevealed: {},
   reviewFilter: "all",
+  searchQuery: "",
   configMessage: "",
   backupMessage: "",
 };
@@ -373,6 +374,7 @@ function showView(name) {
   if (name === "exam") renderExamSetup();
   if (name === "mistakes") renderMistakes();
   if (name === "favorites") renderFavorites();
+  if (name === "search") renderSearch();
   if (name === "backup") renderBackup();
   if (name === "config") safeRenderConfig();
 }
@@ -524,18 +526,20 @@ function startPractice(title, sourceQuestions, options = {}) {
 }
 
 function normalizeReturnView(value) {
-  return value === "mistakes" || value === "favorites" ? value : "chapter";
+  return value === "mistakes" || value === "favorites" || value === "search" ? value : "chapter";
 }
 
 function practiceReturnLabel(returnView) {
   if (returnView === "mistakes") return "错题本";
   if (returnView === "favorites") return "收藏题库";
+  if (returnView === "search") return "搜索结果";
   return "选择";
 }
 
 function practiceReturnAction(returnView) {
   if (returnView === "mistakes") return "go-mistakes";
   if (returnView === "favorites") return "go-favorites";
+  if (returnView === "search") return "go-search";
   return "go-chapter";
 }
 
@@ -1139,6 +1143,88 @@ function startSingleReviewPractice(questionId) {
     returnView: "mistakes",
     kind: question.type === "brief" ? "brief-review-single" : "mistake-single",
   });
+}
+
+function searchQuestions(query) {
+  const terms = query
+    .trim()
+    .toLocaleLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!terms.length) return [];
+
+  return questions.filter((question) => {
+    const searchable = [
+      question.stem,
+      ...Object.values(question.options || {}),
+      question.referenceAnswer || "",
+      question.chapter,
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return terms.every((term) => searchable.includes(term));
+  });
+}
+
+function renderSearch() {
+  const query = state.searchQuery.trim();
+  const results = searchQuestions(query);
+  $("#searchView").innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2>搜索题目</h2>
+        <p>输入题干、选项、章节或简答参考答案中的关键词。</p>
+      </div>
+    </div>
+    <div class="panel search-panel">
+      <div class="search-toolbar">
+        <div class="field search-field">
+          <label for="searchInput">关键词</label>
+          <input id="searchInput" type="search" value="${escapeHtml(query)}" placeholder="例如：中国式现代化">
+        </div>
+        <button class="button" data-action="run-search">搜索</button>
+      </div>
+    </div>
+    ${
+      query
+        ? `<div class="search-summary">找到 ${results.length} 道相关题目</div>
+           ${
+             results.length
+               ? `<div class="result-list">
+                    ${results
+                      .map(
+                        (question) => `
+                      <div class="result-row">
+                        <div>
+                          <strong>${formatType(question.type)} · PDF 第 ${question.sourcePage} 页</strong>
+                          <p class="muted">${question.stem}</p>
+                        </div>
+                        <div class="mistake-row-actions">
+                          <span class="pill">${question.chapter}</span>
+                          <button class="button secondary" data-action="start-single-search" data-question-id="${question.id}">做这题</button>
+                          ${favoriteButton(question)}
+                        </div>
+                      </div>
+                    `
+                      )
+                      .join("")}
+                  </div>`
+               : `<div class="empty">没有找到相关题目。换一个更短或更核心的关键词试试。</div>`
+           }`
+        : `<div class="empty">输入一个关键词开始搜索。</div>`
+    }
+  `;
+}
+
+function runSearch() {
+  state.searchQuery = $("#searchInput")?.value || "";
+  renderSearch();
+}
+
+function startSingleSearchPractice(questionId) {
+  const question = questionById(questionId);
+  if (!question) return;
+  startPractice(`搜索结果 · 单题`, [question], { returnView: "search", kind: "search-single" });
 }
 
 function renderFavorites() {
@@ -1840,6 +1926,7 @@ document.addEventListener("click", (event) => {
   if (action === "go-exam") showView("exam");
   if (action === "go-mistakes") showView("mistakes");
   if (action === "go-favorites") showView("favorites");
+  if (action === "go-search") showView("search");
   if (action === "go-config") showView("config");
   if (action === "go-backup") showView("backup");
   if (action === "resume-practice") restoreLastPractice();
@@ -1882,10 +1969,13 @@ document.addEventListener("click", (event) => {
   }
   if (action === "start-favorites") startFavoritePractice();
   if (action === "start-single-favorite") startSingleFavoritePractice(target.dataset.questionId);
+  if (action === "run-search") runSearch();
+  if (action === "start-single-search") startSingleSearchPractice(target.dataset.questionId);
   if (action === "toggle-favorite") {
     const question = questionById(target.dataset.questionId);
     if (question) toggleFavorite(question);
     if ($("#favoritesView").classList.contains("active-view")) renderFavorites();
+    else if ($("#searchView").classList.contains("active-view")) renderSearch();
     else renderActiveQuestion();
   }
   if (action === "ai-explain") explainQuestion(target.dataset.questionId);
@@ -1936,6 +2026,12 @@ document.addEventListener("change", (event) => {
     if (state.exam && $("#examView").classList.contains("active-view")) handleExamAnswer(input);
     else handlePracticeAnswer(input);
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.target?.id !== "searchInput") return;
+  event.preventDefault();
+  runSearch();
 });
 
 document.querySelectorAll(".nav-button").forEach((button) => {

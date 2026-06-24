@@ -499,6 +499,25 @@ button {
   background: #fff;
 }
 
+.search-panel {
+  margin-bottom: 14px;
+}
+
+.search-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.search-field {
+  flex: 1;
+}
+
+.search-summary {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
 .config-panel {
   display: grid;
   gap: 14px;
@@ -694,6 +713,11 @@ button {
   }
 
   .continue-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .search-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
